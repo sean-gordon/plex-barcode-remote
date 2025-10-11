@@ -75,7 +75,8 @@ echo "[4/9] Creating background scripts (this will be slow)..."
 echo "import os" > sync_plex_library.py
 echo "import sqlite3" >> sync_plex_library.py
 echo "import json" >> sync_plex_library.py
-echo "from plexapi.server import PlexServer" >> sync_plex_library.py
+echo "import random" >> sync_plex_library.py
+from plexapi.server import PlexServer
 echo "" >> sync_plex_library.py
 echo "DB_PATH = os.path.expanduser('~/.config/plex_barcode_remote/barcodes.db')" >> sync_plex_library.py
 echo "" >> sync_plex_library.py
@@ -102,6 +103,15 @@ echo "        return PlexServer(plex_url, settings['plex_token'])" >> sync_plex_
 echo "    except Exception as e:" >> sync_plex_library.py
 echo "        log(f'Failed to connect to Plex server: {e}', conn=conn)" >> sync_plex_library.py
 echo "        return None" >> sync_plex_library.py
+echo "" >> sync_plex_library.py
+echo "def get_or_create_barcode_local(rating_key, media_type, conn):" >> sync_plex_library.py
+echo "    row = conn.execute('SELECT barcode FROM barcodes WHERE rating_key = ?', (rating_key,)).fetchone()" >> sync_plex_library.py
+echo "    if row: return" >> sync_plex_library.py
+echo "    new_code = ''.join(str(random.randint(0, 9)) for _ in range(12))" >> sync_plex_library.py
+echo "    try:" >> sync_plex_library.py
+echo "        conn.execute('INSERT INTO barcodes (rating_key, barcode, media_type) VALUES (?, ?, ?)', (rating_key, new_code, media_type))" >> sync_plex_library.py
+echo "    except sqlite3.IntegrityError:" >> sync_plex_library.py
+echo "        log(f'Barcode collision for rating key {rating_key}, will retry on next sync.', conn=conn)" >> sync_plex_library.py
 echo "" >> sync_plex_library.py
 echo "def main():" >> sync_plex_library.py
 echo "    db_connection = get_db()" >> sync_plex_library.py
@@ -138,6 +148,14 @@ echo "            INSERT OR REPLACE INTO media_items (rating_key, title, year, m
 echo "            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)" >> sync_plex_library.py
 echo "        ''', media_items_to_db)" >> sync_plex_library.py
 echo "        db_connection.commit()" >> sync_plex_library.py
+echo "        log('Verifying and creating barcodes for all media items...', conn=db_connection)" >> sync_plex_library.py
+echo "        media_to_barcode = db_connection.execute('SELECT rating_key, media_type FROM media_items').fetchall()" >> sync_plex_library.py
+echo "        count = 0" >> sync_plex_library.py
+echo "        for item in media_to_barcode:" >> sync_plex_library.py
+echo "            get_or_create_barcode_local(item['rating_key'], item['media_type'], db_connection)" >> sync_plex_library.py
+echo "            count += 1" >> sync_plex_library.py
+echo "        db_connection.commit()" >> sync_plex_library.py
+echo "        log(f'Verified and created barcodes for {count} items.', conn=db_connection)" >> sync_plex_library.py
 echo "        log('Plex library sync complete.', conn=db_connection)" >> sync_plex_library.py
 echo "    except Exception as e:" >> sync_plex_library.py
 echo "        log(f'An error occurred during sync: {e}', conn=db_connection)" >> sync_plex_library.py
@@ -155,6 +173,7 @@ echo "import random" >> generate_pdf_task.py
 echo "import time" >> generate_pdf_task.py
 echo "import zipfile" >> generate_pdf_task.py
 echo "import shutil" >> generate_pdf_task.py
+echo "import gc" >> generate_pdf_task.py
 echo "from plexapi.server import PlexServer" >> generate_pdf_task.py
 echo "from PIL import Image, ImageDraw" >> generate_pdf_task.py
 echo "import barcode" >> generate_pdf_task.py
@@ -166,8 +185,11 @@ echo "DB_PATH = os.path.expanduser('~/.config/plex_barcode_remote/barcodes.db')"
 echo "CACHE_DIR = os.path.expanduser('~/.config/plex_barcode_remote/poster_cache')" >> generate_pdf_task.py
 echo "OUTPUT_ZIP = os.path.expanduser('~/plex_barcode_remote/static/plex_posters.zip')" >> generate_pdf_task.py
 echo "STATUS_FILE = os.path.expanduser('~/plex_barcode_remote/static/pdf_status.txt')" >> generate_pdf_task.py
+echo "PID_FILE = os.path.expanduser('~/plex_barcode_remote/static/pdf_task.pid')" >> generate_pdf_task.py
 echo "TEMP_DIR = '/tmp/pdf_gen'" >> generate_pdf_task.py
 echo "BATCH_SIZE = 25" >> generate_pdf_task.py
+echo "POSTER_WIDTH = 300" >> generate_pdf_task.py
+echo "POSTER_HEIGHT = 450" >> generate_pdf_task.py
 echo "" >> generate_pdf_task.py
 echo "def log(msg, source='pdf_task'):" >> generate_pdf_task.py
 echo "    print(f'[{source.upper()}] {msg}', flush=True)" >> generate_pdf_task.py
@@ -208,29 +230,44 @@ echo "        except sqlite3.IntegrityError:" >> generate_pdf_task.py
 echo "            return get_or_create_barcode(rating_key, media_type)" >> generate_pdf_task.py
 echo "        return new_code" >> generate_pdf_task.py
 echo "" >> generate_pdf_task.py
-echo "def get_cached_poster(item, plex):" >> generate_pdf_task.py
-echo "    cache_path = os.path.join(CACHE_DIR, f\"{item['rating_key']}.jpg\")" >> generate_pdf_task.py
+echo "def get_cached_poster(item_dict, plex):" >> generate_pdf_task.py
+echo "    rating_key = item_dict['rating_key']" >> generate_pdf_task.py
+echo "    thumb_url = item_dict['thumb']" >> generate_pdf_task.py
+echo "    title = item_dict['title']" >> generate_pdf_task.py
+echo "    cache_path = os.path.join(CACHE_DIR, f'{rating_key}.jpg')" >> generate_pdf_task.py
 echo "    if os.path.exists(cache_path):" >> generate_pdf_task.py
-echo "        with open(cache_path, 'rb') as f:" >> generate_pdf_task.py
-echo "            return f.read()" >> generate_pdf_task.py
-echo "    log(f\"Downloading poster for '{item['title']}'\")" >> generate_pdf_task.py
-echo "    poster_url = plex.url(f\"{item['thumb']}?width=400&height=600&opacity=100\", includeToken=True)" >> generate_pdf_task.py
-echo "    response = requests.get(poster_url, timeout=15)" >> generate_pdf_task.py
-echo "    response.raise_for_status()" >> generate_pdf_task.py
-echo "    image_data = response.content" >> generate_pdf_task.py
-echo "    with open(cache_path, 'wb') as f:" >> generate_pdf_task.py
-echo "        f.write(image_data)" >> generate_pdf_task.py
-echo "    return image_data" >> generate_pdf_task.py
+echo "        with open(cache_path, 'rb') as f: return f.read()" >> generate_pdf_task.py
+echo "    if thumb_url:" >> generate_pdf_task.py
+echo "        try:" >> generate_pdf_task.py
+echo "            poster_url = plex.url(f'{thumb_url}?width={POSTER_WIDTH}&height={POSTER_HEIGHT}&opacity=100', includeToken=True)" >> generate_pdf_task.py
+echo "            response = requests.get(poster_url, timeout=10)" >> generate_pdf_task.py
+echo "            response.raise_for_status()" >> generate_pdf_task.py
+echo "            image_data = response.content" >> generate_pdf_task.py
+echo "            with open(cache_path, 'wb') as f: f.write(image_data)" >> generate_pdf_task.py
+echo "            return image_data" >> generate_pdf_task.py
+echo "        except requests.exceptions.RequestException as e:" >> generate_pdf_task.py
+echo "            log(f\"Cached thumb for '{title}' failed ({e}). Fetching live item for fresh URL.\")" >> generate_pdf_task.py
+echo "    try:" >> generate_pdf_task.py
+echo "        live_item = plex.fetchItem(int(rating_key))" >> generate_pdf_task.py
+echo "        log(f\"Downloading poster for '{title}' with fresh URL.\")" >> generate_pdf_task.py
+echo "        fresh_poster_url = plex.url(f'{live_item.thumb}?width={POSTER_WIDTH}&height={POSTER_HEIGHT}&opacity=100', includeToken=True)" >> generate_pdf_task.py
+echo "        response = requests.get(fresh_poster_url, timeout=15)" >> generate_pdf_task.py
+echo "        response.raise_for_status()" >> generate_pdf_task.py
+echo "        image_data = response.content" >> generate_pdf_task.py
+echo "        with open(cache_path, 'wb') as f: f.write(image_data)" >> generate_pdf_task.py
+echo "        return image_data" >> generate_pdf_task.py
+echo "    except Exception as e:" >> generate_pdf_task.py
+echo "        log(f\"Final attempt to download poster for '{title}' failed: {e}\")" >> generate_pdf_task.py
+echo "        raise" >> generate_pdf_task.py
 echo "" >> generate_pdf_task.py
 echo "def main():" >> generate_pdf_task.py
-echo "    if os.path.exists(TEMP_DIR):" >> generate_pdf_task.py
-echo "        shutil.rmtree(TEMP_DIR)" >> generate_pdf_task.py
+echo "    if os.path.exists(TEMP_DIR): shutil.rmtree(TEMP_DIR)" >> generate_pdf_task.py
 echo "    os.makedirs(TEMP_DIR)" >> generate_pdf_task.py
 echo "    try:" >> generate_pdf_task.py
 echo "        with open(STATUS_FILE, 'w') as f: f.write('running')" >> generate_pdf_task.py
 echo "        plex = get_plex_server()" >> generate_pdf_task.py
 echo "        if not plex: raise ConnectionError('Could not connect to Plex server.')" >> generate_pdf_task.py
-echo "        log('Starting PDF generation process...')" >> generate_pdf_task.py
+echo "        log('Fetching media from local cache...')" >> generate_pdf_task.py
 echo "        with get_db() as conn:" >> generate_pdf_task.py
 echo "            media_rows = conn.execute('SELECT rating_key, title, contentRating, media_type, thumb FROM media_items').fetchall()" >> generate_pdf_task.py
 echo "        if not media_rows: raise ValueError('No media found in local cache. Run the sync script first.')" >> generate_pdf_task.py
@@ -258,14 +295,14 @@ echo "                x_start = (pdf.w - (cols * card_w)) / 2" >> generate_pdf_t
 echo "                y_start = (pdf.h - (rows * card_h)) / 2" >> generate_pdf_task.py
 echo "                x, y = x_start, y_start" >> generate_pdf_task.py
 echo "                item_count = 0" >> generate_pdf_task.py
-echo "                for item in batch:" >> generate_pdf_task.py
+echo "                for item_dict in batch:" >> generate_pdf_task.py
 echo "                    if item_count > 0 and item_count % (cols * rows) == 0:" >> generate_pdf_task.py
 echo "                        pdf.add_page()" >> generate_pdf_task.py
 echo "                        x, y = x_start, y_start" >> generate_pdf_task.py
 echo "                    try:" >> generate_pdf_task.py
-echo "                        poster_data = get_cached_poster(item, plex)" >> generate_pdf_task.py
+echo "                        poster_data = get_cached_poster(item_dict, plex)" >> generate_pdf_task.py
 echo "                        poster_img = Image.open(io.BytesIO(poster_data))" >> generate_pdf_task.py
-echo "                        barcode_value = get_or_create_barcode(str(item['rating_key']), item['media_type'])" >> generate_pdf_task.py
+echo "                        barcode_value = get_or_create_barcode(str(item_dict['rating_key']), item_dict['media_type'])" >> generate_pdf_task.py
 echo "                        ean = barcode.get('ean13', barcode_value, writer=ImageWriter())" >> generate_pdf_task.py
 echo "                        barcode_buffer = io.BytesIO()" >> generate_pdf_task.py
 echo "                        ean.write(barcode_buffer)" >> generate_pdf_task.py
@@ -287,37 +324,24 @@ echo "                        card_buffer = io.BytesIO()" >> generate_pdf_task.p
 echo "                        background.save(card_buffer, format='PNG')" >> generate_pdf_task.py
 echo "                        card_buffer.seek(0)" >> generate_pdf_task.py
 echo "                        pdf.image(card_buffer, x=x, y=y, w=card_w, h=card_h, type='PNG')" >> generate_pdf_task.py
+echo "                        del poster_data, poster_img, barcode_img, content_img, background, mask, draw, card_buffer" >> generate_pdf_task.py
 echo "                    except Exception as e:" >> generate_pdf_task.py
-echo "                        log(f\"Skipping '{item['title']}' due to image error: {e}\")" >> generate_pdf_task.py
+echo "                        log(f\"Skipping '{item_dict['title']}' due to image error: {e}\")" >> generate_pdf_task.py
 echo "                        pdf.set_fill_color(230, 230, 230)" >> generate_pdf_task.py
 echo "                        pdf.rect(x, y, card_w, card_h, 'F')" >> generate_pdf_task.py
 echo "                        pdf.set_xy(x, y + card_h/2)" >> generate_pdf_task.py
 echo "                        pdf.set_font('helvetica', 'B', 8)" >> generate_pdf_task.py
-echo "                        pdf.multi_cell(card_w, 4, f\"Error:\\n{item['title']}\", align='C')" >> generate_pdf_task.py
+echo "                        pdf.multi_cell(card_w, 4, f\"Error:\\n{item_dict['title']}\", align='C')" >> generate_pdf_task.py
 echo "                    x += card_w" >> generate_pdf_task.py
 echo "                    if (item_count + 1) % cols == 0:" >> generate_pdf_task.py
 echo "                        x = x_start" >> generate_pdf_task.py
 echo "                        y += card_h" >> generate_pdf_task.py
 echo "                    item_count += 1" >> generate_pdf_task.py
+echo "                    gc.collect()" >> generate_pdf_task.py
 echo "                pdf_filename = f'Posters-{rating.replace(\"/\", \"_\")}-part{part_num}.pdf'" >> generate_pdf_task.py
 echo "                pdf_path = os.path.join(TEMP_DIR, pdf_filename)" >> generate_pdf_task.py
 echo "                pdf.output(pdf_path)" >> generate_pdf_task.py
-echo "                pdf_files.append(pdf_path)" >> generate_pdf_task.py
-echo "        log('Zipping PDF files...')" >> generate_pdf_task.py
-echo "        with zipfile.ZipFile(OUTPUT_ZIP, 'w', zipfile.ZIP_DEFLATED) as zf:" >> generate_pdf_task.py
-echo "            for pdf_path in pdf_files:" >> generate_pdf_task.py
-echo "                zf.write(pdf_path, os.path.basename(pdf_path))" >> generate_pdf_task.py
-echo "        log('Finished PDF generation.')" >> generate_pdf_task.py
-echo "        with open(STATUS_FILE, 'w') as f: f.write('complete')" >> generate_pdf_task.py
-echo "    except Exception as e:" >> generate_pdf_task.py
-echo "        log(f'PDF generation failed: {e}')" >> generate_pdf_task.py
-echo "        with open(STATUS_FILE, 'w') as f: f.write(f'error: {e}')" >> generate_pdf_task.py
-echo "    finally:" >> generate_pdf_task.py
-echo "        if os.path.exists(TEMP_DIR):" >> generate_pdf_task.py
-echo "            shutil.rmtree(TEMP_DIR)" >> generate_pdf_task.py
-echo "" >> generate_pdf_task.py
-echo "if __name__ == '__main__':" >> generate_pdf_task.py
-echo "    main()" >> generate_pdf_task.py
+echo "                pdf_files.append(pdf_path)" >> generate_p ...
 
 # ----------------------------------------------------------------------
 # -------- 5. Main Flask Dashboard (web_dashboard.py) ------------------
@@ -332,6 +356,7 @@ echo "import re" >> web_dashboard.py
 echo "import time" >> web_dashboard.py
 echo "import glob" >> web_dashboard.py
 echo "import json" >> web_dashboard.py
+echo "import signal" >> web_dashboard.py
 echo "from flask import Flask, render_template, request, redirect, url_for, send_file, jsonify, flash" >> web_dashboard.py
 echo "from flask_sse import sse" >> web_dashboard.py
 echo "from plexapi.server import PlexServer" >> web_dashboard.py
@@ -346,7 +371,6 @@ echo "from flask_login import LoginManager, UserMixin, login_user, logout_user, 
 echo "" >> web_dashboard.py
 echo "DB_PATH = os.path.expanduser('~/.config/plex_barcode_remote/barcodes.db')" >> web_dashboard.py
 echo "PROJECT_DIR = os.path.expanduser('~/plex_barcode_remote')" >> web_dashboard.py
-echo "PLEX_APP_ID = '9AC19493'" >> web_dashboard.py
 echo "app = Flask(__name__)" >> web_dashboard.py
 echo "app.secret_key = os.urandom(24)" >> web_dashboard.py
 echo "app.config['REDIS_URL'] = 'redis://localhost'" >> web_dashboard.py
@@ -401,17 +425,14 @@ echo "        return settings" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "def get_plex_server():" >> web_dashboard.py
 echo "    settings = get_plex_settings()" >> web_dashboard.py
-echo "    if not all(k in settings for k in ['plex_protocol', 'plex_url', 'plex_port', 'plex_token']):" >> web_dashboard.py
+echo "    if not all(k in settings for k in ['plex_protocol', \"plex_url\", \"plex_port\", \"plex_token\"]):" >> web_dashboard.py
 echo "        return None" >> web_dashboard.py
-echo "    for attempt in range(3):" >> web_dashboard.py
-echo "        try:" >> web_dashboard.py
-echo "            plex_url = f\"{settings['plex_protocol']}://{settings['plex_url']}:{settings['plex_port']}\"" >> web_dashboard.py
-echo "            return PlexServer(plex_url, settings['plex_token'])" >> web_dashboard.py
-echo "        except Exception as e:" >> web_dashboard.py
-echo "            log(f'Failed to connect to Plex server (attempt {attempt + 1}/3): {e}')" >> web_dashboard.py
-echo "            time.sleep(2)" >> web_dashboard.py
-echo "    log('All attempts to connect to Plex server failed')" >> web_dashboard.py
-echo "    return None" >> web_dashboard.py
+echo "    try:" >> web_dashboard.py
+echo "        plex_url = f\"{settings['plex_protocol']}://{settings['plex_url']}:{settings['plex_port']}\"" >> web_dashboard.py
+echo "        return PlexServer(plex_url, settings['plex_token'])" >> web_dashboard.py
+echo "    except Exception as e:" >> web_dashboard.py
+echo "        log(f'Failed to connect to Plex server: {e}')" >> web_dashboard.py
+echo "        return None" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "plex = None" >> web_dashboard.py
 echo "" >> web_dashboard.py
@@ -423,18 +444,6 @@ echo "            devices.append({'path': os.path.realpath(path), 'name': os.pat
 echo "    except Exception as e:" >> web_dashboard.py
 echo "        log(f'Error scanning for HID devices: {e}')" >> web_dashboard.py
 echo "    return devices" >> web_dashboard.py
-echo "" >> web_dashboard.py
-echo "def validate_url(url):" >> web_dashboard.py
-echo "    ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'" >> web_dashboard.py
-echo "    hostname_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9\-_\\.]*\.[a-zA-Z0-9][a-zA-Z0-9\-_]*$'" >> web_dashboard.py
-echo "    return bool(re.match(ip_pattern, url) or re.match(hostname_pattern, url))" >> web_dashboard.py
-echo "" >> web_dashboard.py
-echo "def validate_port(port):" >> web_dashboard.py
-echo "    try:" >> web_dashboard.py
-echo "        port_num = int(port)" >> web_dashboard.py
-echo "        return 1 <= port_num <= 65535" >> web_dashboard.py
-echo "    except ValueError:" >> web_dashboard.py
-echo "        return False" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "def get_or_create_barcode(rating_key, media_type):" >> web_dashboard.py
 echo "    with get_db() as conn:" >> web_dashboard.py
@@ -452,10 +461,10 @@ echo "def create_fallback_image(error_message):" >> web_dashboard.py
 echo "    img = Image.new('RGB', (300, 400), (255, 255, 255))" >> web_dashboard.py
 echo "    draw = ImageDraw.Draw(img)" >> web_dashboard.py
 echo "    try:" >> web_dashboard.py
-echo "        font = ImageFont.truetype('arial.ttf', 20)" >> web_dashboard.py
-echo "    except:" >> web_dashboard.py
+echo "        font = ImageFont.truetype(\"arial.ttf\", 20)" >> web_dashboard.py
+echo "    except IOError:" >> web_dashboard.py
 echo "        font = ImageFont.load_default()" >> web_dashboard.py
-echo "    draw.text((10, 10), f'Error: {error_message}', fill=(255, 0, 0), font=font)" >> web_dashboard.py
+echo "    draw.text((10, 10), f'Error:\\n{error_message}', fill=(255,0,0), font=font)" >> web_dashboard.py
 echo "    buf = io.BytesIO()" >> web_dashboard.py
 echo "    img.save(buf, format='JPEG')" >> web_dashboard.py
 echo "    buf.seek(0)" >> web_dashboard.py
@@ -473,7 +482,7 @@ echo "            user_row = conn.execute('SELECT * FROM users WHERE username = 
 echo "        if user_row and check_password_hash(user_row['password_hash'], password):" >> web_dashboard.py
 echo "            user = User(id=user_row['id'], username=user_row['username'], password_hash=user_row['password_hash'])" >> web_dashboard.py
 echo "            login_user(user, remember=True)" >> web_dashboard.py
-echo "            return redirect(url_for('index'))" >> web_dashboard.py
+echo "            return redirect(request.args.get(\"next\") or url_for('index'))" >> web_dashboard.py
 echo "        flash('Invalid username or password', 'warning')" >> web_dashboard.py
 echo "    return render_template('login.html')" >> web_dashboard.py
 echo "" >> web_dashboard.py
@@ -508,15 +517,15 @@ echo "                conn.execute('UPDATE users SET password_hash = ? WHERE id 
 echo "                flash('Password updated successfully.', 'info')" >> web_dashboard.py
 echo "            conn.commit()" >> web_dashboard.py
 echo "        if is_new_plex_config:" >> web_dashboard.py
-echo "            log(\"New Plex settings saved. Triggering initial library sync in the background.\")" >> web_dashboard.py
-echo "            flash(\"Plex settings saved! Your library is now being synced in the background. This may take several minutes.\", \"info\")" >> web_dashboard.py
+echo "            log('New Plex settings saved. Triggering initial library sync in the background.')" >> web_dashboard.py
+echo "            flash('Plex settings saved! Your library is now being synced in the background. This may take several minutes.', 'info')" >> web_dashboard.py
 echo "            python_exec = os.path.join(PROJECT_DIR, 'venv/bin/python')" >> web_dashboard.py
 echo "            sync_script = os.path.join(PROJECT_DIR, 'sync_plex_library.py')" >> web_dashboard.py
 echo "            subprocess.Popen([python_exec, sync_script])" >> web_dashboard.py
 echo "            return redirect(url_for('index'))" >> web_dashboard.py
 echo "        flash('Settings updated.', 'info')" >> web_dashboard.py
 echo "        return redirect(url_for('setup'))" >> web_dashboard.py
-echo "    return render_template('setup.html', errors=None, **defaults)" >> web_dashboard.py
+echo "    return render_template('setup.html', errors=None, defaults=defaults)" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "@app.route('/')" >> web_dashboard.py
 echo "@login_required" >> web_dashboard.py
@@ -618,16 +627,6 @@ echo "        log(f'Error fetching logs from database: {e}')" >> web_dashboard.p
 echo "        log_entries = []" >> web_dashboard.py
 echo "    return render_template('logs.html', logs=log_entries, current_days=days_str)" >> web_dashboard.py
 echo "" >> web_dashboard.py
-echo "@app.route('/edit_barcode/<rating_key>', methods=['POST'])" >> web_dashboard.py
-echo "@login_required" >> web_dashboard.py
-echo "def edit_barcode(rating_key):" >> web_dashboard.py
-echo "    new_barcode = request.form.get('barcode')" >> web_dashboard.py
-echo "    success, message = update_barcode(rating_key, new_barcode)" >> web_dashboard.py
-echo "    if not success:" >> web_dashboard.py
-echo "        log(f'Failed to update barcode for {rating_key}: {message}')" >> web_dashboard.py
-echo "        return jsonify({'error': message}), 400" >> web_dashboard.py
-echo "    return jsonify({'message': message})" >> web_dashboard.py
-echo "" >> web_dashboard.py
 echo "@app.route('/poster/<rating_key>')" >> web_dashboard.py
 echo "@login_required" >> web_dashboard.py
 echo "def poster(rating_key):" >> web_dashboard.py
@@ -685,74 +684,111 @@ echo "    try:" >> web_dashboard.py
 echo "        casts, _ = pychromecast.get_listed_chromecasts(friendly_names=[target_device_name])" >> web_dashboard.py
 echo "        if casts: is_chromecast = True" >> web_dashboard.py
 echo "    except Exception: log('Chromecast discovery failed.')" >> web_dashboard.py
-echo "    if not is_chromecast:" >> web_dashboard.py
+echo "    max_retries = 3" >> web_dashboard.py
+echo "    retry_delay = 3" >> web_dashboard.py
+echo "    for attempt in range(max_retries):" >> web_dashboard.py
 echo "        try:" >> web_dashboard.py
-echo "            log(f'Initiating first playback for {target_device_name}...')" >> web_dashboard.py
-echo "            client = plex.client(target_device_name)" >> web_dashboard.py
-echo "            client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
-echo "            time.sleep(2)" >> web_dashboard.py
-echo "            log('Stopping initial stream...')" >> web_dashboard.py
-echo "            client.stop()" >> web_dashboard.py
-echo "            time.sleep(2)" >> web_dashboard.py
-echo "            log('Re-acquiring client and initiating second playback...')" >> web_dashboard.py
-echo "            client = plex.client(target_device_name)" >> web_dashboard.py
-echo "            client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
-echo "            log(f'Playback sequence completed for {target_device_name}.')" >> web_dashboard.py
-echo "            return 'OK'" >> web_dashboard.py
-echo "        except Exception as e:" >> web_dashboard.py
-echo "            log(f'Failed to control standard client {target_device_name}: {e}')" >> web_dashboard.py
-echo "            return f'Error playing media: {e}', 500" >> web_dashboard.py
-echo "    else:" >> web_dashboard.py
-echo "        try:" >> web_dashboard.py
-echo "            plex_client = None" >> web_dashboard.py
-echo "            log(f'Starting Chromecast wake-up sequence for {target_device_name}.')" >> web_dashboard.py
-echo "            casts[0].wait()" >> web_dashboard.py
-echo "            target_uuid = str(casts[0].cast_info.uuid).replace('-', '')" >> web_dashboard.py
-echo "            if casts[0].app_id != PLEX_APP_ID:" >> web_dashboard.py
-echo "                log('Plex app is not running. Launching app...')" >> web_dashboard.py
-echo "                casts[0].start_app(PLEX_APP_ID)" >> web_dashboard.py
-echo "                for _ in range(10):" >> web_dashboard.py
-echo "                    time.sleep(2)" >> web_dashboard.py
-echo "                    try:" >> web_dashboard.py
-echo "                        for client in plex.clients():" >> web_dashboard.py
-echo "                            if client.machineIdentifier == target_uuid: plex_client = client; break" >> web_dashboard.py
-echo "                        if plex_client: break" >> web_dashboard.py
-echo "                    except Exception: pass" >> web_dashboard.py
-echo "            if not plex_client:" >> web_dashboard.py
-echo "                for client in plex.clients():" >> web_dashboard.py
-echo "                    if client.machineIdentifier == target_uuid: plex_client = client; break" >> web_dashboard.py
-echo "            if plex_client:" >> web_dashboard.py
-echo "                client_name = getattr(plex_client, \"name\", plex_client.title)" >> web_dashboard.py
-echo "                log(f'UUID match found! Client name is \"{client_name}\".')" >> web_dashboard.py
-echo "                plex_client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
-echo "                return 'OK'" >> web_dashboard.py
+echo "            if not is_chromecast:" >> web_dashboard.py
+echo "                log(f'Attempting playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> web_dashboard.py
+echo "                client = plex.client(target_device_name)" >> web_dashboard.py
+echo "                client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
+echo "                time.sleep(2)" >> web_dashboard.py
+echo "                client.stop()" >> web_dashboard.py
+echo "                time.sleep(2)" >> web_dashboard.py
+echo "                client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
+echo "                log(f'Playback sequence completed for {target_device_name}.')" >> web_dashboard.py
 echo "            else:" >> web_dashboard.py
-echo "                log('ERROR: Could not find a matching client on Plex Server after wake-up.')" >> web_dashboard.py
-echo "                return 'Error: Chromecast was woken up, but not found.', 500" >> web_dashboard.py
+echo "                log(f'Attempting Chromecast playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> web_dashboard.py
+echo "                plex_client = None" >> web_dashboard.py
+echo "                casts[0].wait()" >> web_dashboard.py
+echo "                target_uuid = str(casts[0].cast_info.uuid).replace('-', '')" >> web_dashboard.py
+echo "                if casts[0].app_id != '9AC19493':" >> web_dashboard.py
+echo "                    log('Plex app is not running. Launching app...')" >> web_dashboard.py
+echo "                    casts[0].start_app('9AC19493')" >> web_dashboard.py
+echo "                    for _ in range(10):" >> web_dashboard.py
+echo "                        time.sleep(2)" >> web_dashboard.py
+echo "                        try:" >> web_dashboard.py
+echo "                            for c in plex.clients():" >> web_dashboard.py
+echo "                                if c.machineIdentifier == target_uuid: plex_client = c; break" >> web_dashboard.py
+echo "                            if plex_client: break" >> web_dashboard.py
+echo "                        except Exception: pass" >> web_dashboard.py
+echo "                if not plex_client:" >> web_dashboard.py
+echo "                    for c in plex.clients():" >> web_dashboard.py
+echo "                        if c.machineIdentifier == target_uuid: plex_client = c; break" >> web_dashboard.py
+echo "                if plex_client:" >> web_dashboard.py
+echo "                    client_name = getattr(plex_client, \"name\", plex_client.title)" >> web_dashboard.py
+echo "                    log(f'UUID match found! Client name is \"{client_name}\".')" >> web_dashboard.py
+echo "                    plex_client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
+echo "                else:" >> web_dashboard.py
+echo "                    raise ConnectionError('Could not find a matching Chromecast client on Plex Server after wake-up.')" >> web_dashboard.py
+echo "            return 'OK'" >> web_dashboard.py
+echo "        except requests.exceptions.ConnectionError as e:" >> web_dashboard.py
+echo "            log(f'Playback failed on attempt {attempt + 1}: Connection refused or failed.')" >> web_dashboard.py
+echo "            if attempt < max_retries - 1:" >> web_dashboard.py
+echo "                log(f'Retrying in {retry_delay} seconds...')" >> web_dashboard.py
+echo "                time.sleep(retry_delay)" >> web_dashboard.py
+echo "            else:" >> web_dashboard.py
+echo "                log('All playback attempts failed.')" >> web_dashboard.py
+echo "                return f'Failed to connect to client \'{target_device_name}\' after {max_retries} attempts. It may be offline.', 500" >> web_dashboard.py
 echo "        except Exception as e:" >> web_dashboard.py
-echo "            log(f'Chromecast control sequence failed: {e}')" >> web_dashboard.py
-echo "            return f'Error playing media: {e}', 500" >> web_dashboard.py
-echo "    return 'OK'" >> web_dashboard.py
+echo "            log(f'An unexpected error occurred during playback: {e}')" >> web_dashboard.py
+echo "            return f'An unexpected error occurred: {e}', 500" >> web_dashboard.py
+echo "    return 'All playback attempts failed.', 500" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "@app.route('/start_pdf_generation')" >> web_dashboard.py
 echo "@login_required" >> web_dashboard.py
 echo "def start_pdf_generation():" >> web_dashboard.py
+echo "    pid_file = os.path.join(PROJECT_DIR, 'static', 'pdf_task.pid')" >> web_dashboard.py
 echo "    status_file = os.path.join(PROJECT_DIR, 'static', 'pdf_status.txt')" >> web_dashboard.py
 echo "    zip_file = os.path.join(PROJECT_DIR, 'static', 'plex_posters.zip')" >> web_dashboard.py
-echo "    if os.path.exists(status_file):" >> web_dashboard.py
-echo "        with open(status_file, 'r') as f:" >> web_dashboard.py
-echo "            if 'running' in f.read():" >> web_dashboard.py
-echo "                flash('PDF generation is already in progress.', 'warning')" >> web_dashboard.py
-echo "                return redirect(url_for('index'))" >> web_dashboard.py
-echo "    log('Cleaning up old PDF files before new generation.')" >> web_dashboard.py
+echo "    if os.path.exists(pid_file):" >> web_dashboard.py
+echo "        try:" >> web_dashboard.py
+echo "            with open(pid_file, 'r') as f:" >> web_dashboard.py
+echo "                pid = int(f.read().strip())" >> web_dashboard.py
+echo "            log(f'A previous PDF task (PID: {pid}) is running. Stopping it now.')" >> web_dashboard.py
+echo "            os.kill(pid, signal.SIGTERM)" >> web_dashboard.py
+echo "            flash('Stopping the previous PDF generation task.', 'warning')" >> web_dashboard.py
+echo "        except (ProcessLookupError, ValueError) as e:" >> web_dashboard.py
+echo "            log(f'Found a stale PID file but the process was not running: {e}')" >> web_dashboard.py
+echo "        except Exception as e:" >> web_dashboard.py
+echo "            log(f'Error while trying to stop previous PDF task: {e}')" >> web_dashboard.py
+echo "    log('Waiting 2 seconds before starting new task...')" >> web_dashboard.py
+echo "    time.sleep(2)" >> web_dashboard.py
+echo "    log('Cleaning up old files before new generation.')" >> web_dashboard.py
 echo "    if os.path.exists(status_file): os.remove(status_file)" >> web_dashboard.py
 echo "    if os.path.exists(zip_file): os.remove(zip_file)" >> web_dashboard.py
-echo "    log('Starting background PDF generation task.')" >> web_dashboard.py
+echo "    if os.path.exists(pid_file): os.remove(pid_file)" >> web_dashboard.py
+echo "    log('Starting new background PDF generation task.')" >> web_dashboard.py
 echo "    python_exec = os.path.join(PROJECT_DIR, 'venv/bin/python')" >> web_dashboard.py
 echo "    task_script = os.path.join(PROJECT_DIR, 'generate_pdf_task.py')" >> web_dashboard.py
-echo "    subprocess.Popen([python_exec, task_script])" >> web_dashboard.py
-echo "    flash('PDF generation started. This may take a long time.', 'info')" >> web_dashboard.py
+echo "    process = subprocess.Popen([python_exec, task_script])" >> web_dashboard.py
+echo "    with open(pid_file, 'w') as f:" >> web_dashboard.py
+echo "        f.write(str(process.pid))" >> web_dashboard.py
+echo "    flash('New PDF generation process started.', 'info')" >> web_dashboard.py
 echo "    time.sleep(1)" >> web_dashboard.py
+echo "    return redirect(url_for('index'))" >> web_dashboard.py
+echo "" >> web_dashboard.py
+echo "@app.route('/stop_pdf_generation')" >> web_dashboard.py
+echo "@login_required" >> web_dashboard.py
+echo "def stop_pdf_generation():" >> web_dashboard.py
+echo "    pid_file = os.path.join(PROJECT_DIR, 'static', 'pdf_task.pid')" >> web_dashboard.py
+echo "    status_file = os.path.join(PROJECT_DIR, 'static', 'pdf_status.txt')" >> web_dashboard.py
+echo "    try:" >> web_dashboard.py
+echo "        if os.path.exists(pid_file):" >> web_dashboard.py
+echo "            with open(pid_file, 'r') as f:" >> web_dashboard.py
+echo "                pid = int(f.read().strip())" >> web_dashboard.py
+echo "            log(f'Attempting to stop PDF generation process with PID: {pid}')" >> web_dashboard.py
+echo "            os.kill(pid, signal.SIGTERM)" >> web_dashboard.py
+echo "            flash('PDF generation process has been stopped.', 'info')" >> web_dashboard.py
+echo "    except (ProcessLookupError, ValueError) as e:" >> web_dashboard.py
+echo "        log(f'Could not stop process (it may have already finished): {e}')" >> web_dashboard.py
+echo "        flash('PDF process was not found. It may have already finished.', 'warning')" >> web_dashboard.py
+echo "    except Exception as e:" >> web_dashboard.py
+echo "        log(f'Error stopping PDF process: {e}')" >> web_dashboard.py
+echo "        flash(f'An error occurred while stopping the process: {e}', 'warning')" >> web_dashboard.py
+echo "    finally:" >> web_dashboard.py
+echo "        if os.path.exists(pid_file): os.remove(pid_file)" >> web_dashboard.py
+echo "        with open(status_file, 'w') as f: f.write('error: Process stopped by user.')" >> web_dashboard.py
 echo "    return redirect(url_for('index'))" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "@app.route('/pdf_status')" >> web_dashboard.py
@@ -767,7 +803,7 @@ echo "" >> web_dashboard.py
 echo "@app.route('/publish_status', methods=['POST'])" >> web_dashboard.py
 echo "def publish_status():" >> web_dashboard.py
 echo "    message = request.json.get('message')" >> web_dashboard.py
-echo "    sse.publish({'message': message}, type='greeting')" >> web_dashboard.py
+echo "    if message: sse.publish({'message': message}, type='greeting')" >> web_dashboard.py
 echo "    return jsonify(success=True)" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "@app.route('/refresh_clients', methods=['POST'])" >> web_dashboard.py
@@ -832,9 +868,9 @@ echo "    app.run(host='0.0.0.0', port=port, debug=False)" >> web_dashboard.py
 echo "[6/9] Creating HTML templates..."
 echo "<!DOCTYPE html><html><head><title>Login - Plex Barcode Remote</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Barcode Remote Login <button id=\"theme-toggle\">☀️</button></h1><div class='form-container'>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class='flash-container'>{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}<form method='post'><div class='form-group'><label for='username'>Username</label><input type='text' id='username' name='username' required></div><div class='form-group'><label for='password'>Password</label><input type='password' id='password' name='password' required></div><button type='submit'>Login</button></form></div><script>document.getElementById('theme-toggle').addEventListener('click',()=>{let e=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',e?'dark':'light');updateThemeIcon(e)});function updateThemeIcon(e){document.getElementById('theme-toggle').textContent=e?'🌙':'☀️'}if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}</script></body></html>" > templates/login.html
 
-echo "<!DOCTYPE html><html><head><title>Plex Barcode Dashboard - Setup</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Server Setup <button id=\"theme-toggle\">☀️</button></h1><div class='form-container'>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% if errors %}<div class='error'><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}<form method='POST' action='/setup'><h3>Plex & TMDB Settings</h3><div class='form-group'><label>Protocol:</label><input type='radio' name='protocol' value='http' {% if protocol == 'http' %}checked{% endif %}> HTTP <input type='radio' name='protocol' value='https' {% if protocol == 'https' %}checked{% endif %}> HTTPS</div><div class='form-group'><label for='url'>URL or IP Address:</label><input type='text' id='url' name='url' value='{{ url }}' placeholder='e.g., 192.168.1.100'></div><div class='form-group'><label for='port'>Port:</label><input type='number' id='port' name='port' value='{{ port }}' placeholder='e.g., 32400' min='1' max='65535'></div><div class='form-group'><label for='token'>Plex Token:</label><input type='text' id='token' name='token' value='{{ token }}' placeholder='Enter your Plex token'><p><a href='https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/' target='_blank'>How to find your Plex token</a></p></div><div class='form-group'><label for='tmdb_api_key'>TMDB API Key (Optional):</label><input type='text' id='tmdb_api_key' name='tmdb_api_key' value='{{ tmdb_api_key }}' placeholder='For missing barcode lookup'><p><a href='https://www.themoviedb.org/settings/api' target='_blank'>How to get a TMDB API key</a></p></div><hr><h3>User Management</h3><div class='form-group'><label for='new_username'>Change Username</label><input type='text' id='new_username' name='new_username' placeholder=\"Current: {{ current_user.username }}\"></div><div class='form-group'><label for='new_password'>Change Password</label><input type='password' id='new_password' name='new_password' placeholder='Leave blank to keep current password'></div><button type='submit'>Save Settings</button></form><p style='margin-top: 20px;'><a href=\"{{ url_for('index') }}\" class=\"button-link\">Back to Dashboard</a></p></div><script>document.getElementById('theme-toggle').addEventListener('click',()=>{let e=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',e?'dark':'light');updateThemeIcon(e)});function updateThemeIcon(e){document.getElementById('theme-toggle').textContent=e?'🌙':'☀️'}if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}</script></body></html>" > templates/setup.html
+echo "<!DOCTYPE html><html><head><title>Plex Barcode Dashboard - Setup</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Server Setup <button id=\"theme-toggle\">☀️</button></h1><div class='form-container'>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% if errors %}<div class='error'><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}<form method='POST' action='/setup'><h3>Plex & TMDB Settings</h3><div class='form-group'><label>Protocol:</label><input type='radio' name='protocol' value='http' {% if defaults.plex_protocol == 'http' %}checked{% endif %}> HTTP <input type='radio' name='protocol' value='https' {% if defaults.plex_protocol == 'https' %}checked{% endif %}> HTTPS</div><div class='form-group'><label for='url'>URL or IP Address:</label><input type='text' id='url' name='url' value='{{ defaults.plex_url }}' placeholder='e.g., 192.168.1.100'></div><div class='form-group'><label for='port'>Port:</label><input type='number' id='port' name='port' value='{{ defaults.plex_port }}' placeholder='e.g., 32400' min='1' max='65535'></div><div class='form-group'><label for='token'>Plex Token:</label><input type='text' id='token' name='token' value='{{ defaults.plex_token }}' placeholder='Enter your Plex token'><p><a href='https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/' target='_blank'>How to find your Plex token</a></p></div><div class='form-group'><label for='tmdb_api_key'>TMDB API Key (Optional):</label><input type='text' id='tmdb_api_key' name='tmdb_api_key' value='{{ defaults.tmdb_api_key }}' placeholder='For missing barcode lookup'><p><a href='https://www.themoviedb.org/settings/api' target='_blank'>How to get a TMDB API key</a></p></div><hr><h3>User Management</h3><div class='form-group'><label for='new_username'>Change Username</label><input type='text' id='new_username' name='new_username' placeholder=\"Current: {{ current_user.username }}\"></div><div class='form-group'><label for='new_password'>Change Password</label><input type='password' id='new_password' name='new_password' placeholder='Leave blank to keep current password'></div><button type='submit'>Save Settings</button></form><p style='margin-top: 20px;'><a href=\"{{ url_for('index') }}\" class=\"button-link\">Back to Dashboard</a></p></div><script>document.getElementById('theme-toggle').addEventListener('click',()=>{let e=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',e?'dark':'light');updateThemeIcon(e)});function updateThemeIcon(e){document.getElementById('theme-toggle').textContent=e?'🌙':'☀️'}if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}</script></body></html>" > templates/setup.html
 
-echo "<!DOCTYPE html><html><head><title>Plex Barcode Dashboard</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Barcode Dashboard <button id=\"theme-toggle\">☀️</button></h1>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class='flash-container'>{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}<div class='controls-grid'><div class='control-group'><h3>Live Status</h3><div id=\"status-box\">Ready...</div></div><div class='control-group'><h3>Playback Target</h3><form method='POST' action='/select_client'><label for='client'>Target Device:</label><select name='client' id='client_select'><option value=''>Select a Device</option></select><button type='submit'>Set</button><button type='button' onclick='refreshClients()'>Refresh Clients</button></form>{% if last_client %}<p style='color:green;'>Selected Target: <strong>{{ last_client }}</strong></p>{% endif %}</div><div class='control-group'><h3>Scanner Settings</h3><form method='POST' action='/save_scanner_settings' id='scanner-form'><div class='radio-group'><label><input type='radio' name='scanner_mode' value='serial' {% if scanner_mode == 'serial' %}checked{% endif %}> Serial</label><label><input type='radio' name='scanner_mode' value='hid' {% if scanner_mode == 'hid' %}checked{% endif %}> HID Keyboard</label></div><div id='serial-group'><label for='serial_device'>Serial Port:</label><select name='serial_device' id='serial_device_select'></select></div><div id='hid-group'><label for='hid_device'>HID Device:</label><select name='hid_device' id='hid_device_select'></select></div><button type='submit'>Save & Restart Listener</button></form><div class='button-group'><button onclick='refreshSerialPorts()'>Refresh Serial</button><button onclick='refreshHidDevices()'>Refresh HID</button></div></div><div class='control-group'><h3>System</h3><div class='button-group'><button onclick=\"window.location.href='/setup'\">Plex Setup</button><button onclick=\"window.location.href='/logs'\">View Logs</button><a href=\"/start_pdf_generation\" id=\"pdf-start-button\" class=\"button-link\">Start PDF Generation</a><a href=\"/static/plex_posters.zip\" id=\"pdf-download-link\" class=\"button-link\" style=\"display:none;\">Download PDFs</a><a href=\"{{ url_for('logout') }}\" class=\"button-link\">Logout</a></div><p id=\"pdf-status-text\" style=\"margin-top:10px;\"></p></div></div><div class='search-container'><input type='text' id='search-input' placeholder='Search by title...' value='{{ search_term }}' oninput='debounceSearch()'><select id='genre-filter' onchange='applyGenreFilter()'><option value=''>All Genres</option>{% for genre in genres %}<option value='{{ genre }}' {% if genre == genre_filter %}selected{% endif %}>{{ genre }}</option>{% endfor %}</select><button onclick='clearSearch()'>Clear</button></div><table><thead><tr><th>Title</th><th>Year</th><th>Type</th><th>Director</th><th>Actors</th><th>Barcode</th><th>Actions</th></tr></thead><tbody>{% for item in items %}<tr><td>{{ item.title }}</td><td>{{ item.year }}</td><td>{{ item.type }}</td><td>{% for director in item.directors %}<a href=\"/director/{{ director|urlencode }}\">{{ director }}</a>{% endfor %}</td><td>{% for actor in item.actors %}<a href=\"/actor/{{ actor|urlencode }}\">{{ actor }}</a><br>{% endfor %}</td><td><span id='barcode-{{ item.rating_key }}'>{{ item.barcode }}</span><form style='display:none' id='edit-form-{{ item.rating_key }}'><input type='text' name='barcode' value='{{ item.barcode }}' pattern='\\d{12,13}' title='Barcode must be 12 or 13 digits' required><button type='submit'>Save</button><button type='button' onclick=\"toggleEdit('{{ item.rating_key }}')\">Cancel</button></form></td><td><button onclick=\"playMedia('{{ item.rating_key }}')\">Play</button><button onclick=\"togglePoster('{{ item.rating_key }}')\">Poster</button><a class='button-link' href='/poster/{{ item.rating_key }}?download=true' download>Download</a><button onclick=\"toggleEdit('{{ item.rating_key }}')\">Edit Barcode</button><div id='poster-container-{{ item.rating_key }}' style='display:none;margin-top:10px;'><img id='poster-{{ item.rating_key }}' data-src='/poster/{{ item.rating_key }}' style='max-width:200px;' loading='lazy'></div></td></tr>{% endfor %}</tbody></table><div class='pagination'><button onclick=\"window.location.href='/?page={{ page - 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page <= 1 %}disabled{% endif %}>Prev</button><span>Page {{ page }} of {{ total_pages }} | Total items: {{ total_items }}</span><button onclick=\"window.location.href='/?page={{ page + 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page >= total_pages %}disabled{% endif %}>Next</button></div><script>const lastClient='{{ last_client }}';const scannerMode='{{ scanner_mode }}';const scannerDevice='{{ scanner_device }}';function populateSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);const currentVal=select.value;select.innerHTML='<option value=\"\">Select a Device</option>';options.forEach(opt=>{const option=document.createElement('option');option.value=opt;option.textContent=opt;if(opt===selectedValue||opt===currentVal){option.selected=true}select.appendChild(option)})}function populateHidSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);select.innerHTML='';options.forEach(opt=>{const option=document.createElement('option');option.value=opt.path;option.textContent=opt.name;if(opt.path===selectedValue){option.selected=true}select.appendChild(option)})}document.addEventListener('DOMContentLoaded',()=>{populateSelect('client_select',{{ clients|tojson }},lastClient);populateSelect('serial_device_select',{{ serial_ports|tojson }},scannerDevice);populateHidSelect('hid_device_select',{{ hid_devices|tojson }},scannerDevice);document.querySelectorAll('input[name=\"scanner_mode\"]').forEach(radio=>{radio.addEventListener('change',toggleScannerInputs)});toggleScannerInputs();document.querySelectorAll('form[id^=\"edit-form-\"]').forEach(form=>{form.addEventListener('submit',function(e){e.preventDefault();const ratingKey=this.id.split('-').pop();const newBarcode=this.querySelector('input[name=\"barcode\"]').value;fetch('/edit_barcode/'+ratingKey,{method:'POST',body:new FormData(this)}).then(res=>res.json()).then(data=>{if(data.error){alert('Error: '+data.error)}else{document.getElementById('barcode-'+ratingKey).textContent=newBarcode;if(document.getElementById('poster-'+ratingKey).parentElement.style.display!=='none'){document.getElementById('poster-'+ratingKey).src='/poster/'+ratingKey+'?t='+(new Date).getTime()}toggleEdit(ratingKey);alert(data.message)}}).catch(err=>alert('Error: '+err.message))})});const pdfStatusText=document.getElementById('pdf-status-text'),pdfStartButton=document.getElementById('pdf-start-button'),pdfDownloadLink=document.getElementById('pdf-download-link');let pdfStatusInterval=null;function checkPdfStatus(){fetch('/pdf_status').then(e=>e.json()).then(e=>{if(e.status==='running'){pdfStatusText.textContent='Status: Generating PDFs...';pdfStatusText.style.color='orange';pdfStartButton.style.display='none';pdfDownloadLink.style.display='none';if(!pdfStatusInterval){pdfStatusInterval=setInterval(checkPdfStatus,5000)}}else if(e.status==='complete'){pdfStatusText.textContent='Status: Generation Complete!';pdfStatusText.style.color='green';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='inline-block';clearInterval(pdfStatusInterval);pdfStatusInterval=null}else if(e.status.startsWith('error')){pdfStatusText.textContent='Status: '+e.status;pdfStatusText.style.color='red';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='none';clearInterval(pdfStatusInterval);pdfStatusInterval=null}else{pdfStatusText.textContent='';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='none'}})}checkPdfStatus();pdfStartButton.addEventListener('click',()=>{if(!pdfStatusInterval){pdfStatusInterval=setInterval(checkPdfStatus,5000)}});const themeToggle=document.getElementById('theme-toggle');function updateThemeIcon(isDark){themeToggle.textContent=isDark?'🌙':'☀️'}themeToggle.addEventListener('click',()=>{let isDark=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',isDark?'dark':'light');updateThemeIcon(isDark)});if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}const eventSource=new EventSource('/stream');eventSource.onmessage=function(event){const data=JSON.parse(event.data);document.getElementById('status-box').textContent=data.message}});function toggleScannerInputs(){const mode=document.querySelector('input[name=\"scanner_mode\"]:checked').value;document.getElementById('serial-group').style.display=mode==='serial'?'block':'none';document.getElementById('hid-group').style.display=mode==='hid'?'block':'none'}function togglePoster(ratingKey){const container=document.getElementById('poster-container-'+ratingKey);const img=document.getElementById('poster-'+ratingKey);if(container.style.display==='none'){img.src=img.dataset.src;container.style.display='block'}else{container.style.display='none'}}function toggleEdit(ratingKey){const span=document.getElementById('barcode-'+ratingKey);const form=document.getElementById('edit-form-'+ratingKey);if(span.style.display==='none'){span.style.display='inline';form.style.display='none'}else{span.style.display='none';form.style.display='inline-block'}}function playMedia(ratingKey){fetch('/play/'+ratingKey,{method:'POST'}).then(res=>{if(!res.ok){res.text().then(text=>alert('Error: '+text))}}).catch(err=>alert('Error: '+err.message))}function refreshClients(){fetch('/refresh_clients',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateSelect('client_select',data.clients,lastClient);alert('Client list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshSerialPorts(){fetch('/refresh_serial_ports',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateSelect('serial_device_select',data.ports,null);alert('Serial port list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshHidDevices(){fetch('/refresh_hid_devices',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateHidSelect('hid_device_select',data.devices,null);alert('HID device list refreshed!')}).catch(err=>alert('Error: '+err.message))}let searchTimeout;function debounceSearch(){clearTimeout(searchTimeout);searchTimeout=setTimeout(applyFilters,500)}function applyGenreFilter(){applyFilters()}function applyFilters(){const searchVal=document.getElementById('search-input').value;const genreVal=document.getElementById('genre-filter').value;let newUrl='/?page=1&per_page={{ per_page }}';if(searchVal){newUrl+='&search='+encodeURIComponent(searchVal)}if(genreVal){newUrl+='&genre='+encodeURIComponent(genreVal)}window.location.href=newUrl}function clearSearch(){window.location.href='/?page=1&per_page={{ per_page }}'}</script></body></html>" > templates/index.html
+echo "<!DOCTYPE html><html><head><title>Plex Barcode Dashboard</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Barcode Dashboard <button id=\"theme-toggle\">☀️</button></h1>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class='flash-container'>{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}<div class='controls-grid'><div class='control-group'><h3>Live Status</h3><div id=\"status-box\">Ready...</div></div><div class='control-group'><h3>Playback Target</h3><form method='POST' action='/select_client'><label for='client'>Target Device:</label><select name='client' id='client_select'><option value=''>Select a Device</option></select><button type='submit'>Set</button><button type='button' onclick='refreshClients()'>Refresh Clients</button></form>{% if last_client %}<p style='color:green;'>Selected Target: <strong>{{ last_client }}</strong></p>{% endif %}</div><div class='control-group'><h3>Scanner Settings</h3><form method='POST' action='/save_scanner_settings' id='scanner-form'><div class='radio-group'><label><input type='radio' name='scanner_mode' value='serial' {% if scanner_mode == 'serial' %}checked{% endif %}> Serial</label><label><input type='radio' name='scanner_mode' value='hid' {% if scanner_mode == 'hid' %}checked{% endif %}> HID Keyboard</label></div><div id='serial-group'><label for='serial_device'>Serial Port:</label><select name='serial_device' id='serial_device_select'></select></div><div id='hid-group'><label for='hid_device'>HID Device:</label><select name='hid_device' id='hid_device_select'></select></div><button type='submit'>Save & Restart Listener</button></form><div class='button-group'><button onclick='refreshSerialPorts()'>Refresh Serial</button><button onclick='refreshHidDevices()'>Refresh HID</button></div></div><div class='control-group'><h3>System</h3><div class='button-group'><button onclick=\"window.location.href='/setup'\">Plex Setup</button><button onclick=\"window.location.href='/logs'\">View Logs</button><a href=\"/start_pdf_generation\" id=\"pdf-start-button\" class=\"button-link\">Start PDF Generation</a><a href=\"/stop_pdf_generation\" id=\"pdf-stop-button\" class=\"button-link\" style=\"display:none; background-color: #dc3545;\">Force Stop</a><a href=\"/static/plex_posters.zip\" id=\"pdf-download-link\" class=\"button-link\" style=\"display:none;\">Download PDFs</a><a href=\"{{ url_for('logout') }}\" class=\"button-link\">Logout</a></div><p id=\"pdf-status-text\" style=\"margin-top:10px;\"></p></div></div><div class='search-container'><input type='text' id='search-input' placeholder='Search by title...' value='{{ search_term }}' oninput='debounceSearch()'><select id='genre-filter' onchange='applyGenreFilter()'><option value=''>All Genres</option>{% for genre in genres %}<option value='{{ genre }}' {% if genre == genre_filter %}selected{% endif %}>{{ genre }}</option>{% endfor %}</select><button onclick='clearSearch()'>Clear</button></div><table><thead><tr><th>Title</th><th>Year</th><th>Type</th><th>Director</th><th>Actors</th><th>Barcode</th><th>Actions</th></tr></thead><tbody>{% for item in items %}<tr><td>{{ item.title }}</td><td>{{ item.year }}</td><td>{{ item.type }}</td><td>{% for director in item.directors %}<a href=\"/director/{{ director|urlencode }}\">{{ director }}</a>{% endfor %}</td><td>{% for actor in item.actors %}<a href=\"/actor/{{ actor|urlencode }}\">{{ actor }}</a><br>{% endfor %}</td><td><span id='barcode-{{ item.rating_key }}'>{{ item.barcode }}</span><form style='display:none' id='edit-form-{{ item.rating_key }}'><input type='text' name='barcode' value='{{ item.barcode }}' pattern='\\d{12,13}' title='Barcode must be 12 or 13 digits' required><button type='submit'>Save</button><button type='button' onclick=\"toggleEdit('{{ item.rating_key }}')\">Cancel</button></form></td><td><button onclick=\"playMedia('{{ item.rating_key }}')\">Play</button><button onclick=\"togglePoster('{{ item.rating_key }}')\">Poster</button><a class='button-link' href='/poster/{{ item.rating_key }}?download=true' download>Download</a><button onclick=\"toggleEdit('{{ item.rating_key }}')\">Edit Barcode</button><div id='poster-container-{{ item.rating_key }}' style='display:none;margin-top:10px;'><img id='poster-{{ item.rating_key }}' data-src='/poster/{{ item.rating_key }}' style='max-width:200px;' loading='lazy'></div></td></tr>{% endfor %}</tbody></table><div class='pagination'><button onclick=\"window.location.href='/?page={{ page - 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page <= 1 %}disabled{% endif %}>Prev</button><span>Page {{ page }} of {{ total_pages }} | Total items: {{ total_items }}</span><button onclick=\"window.location.href='/?page={{ page + 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page >= total_pages %}disabled{% endif %}>Next</button></div><script>const lastClient='{{ last_client }}';const scannerMode='{{ scanner_mode }}';const scannerDevice='{{ scanner_device }}';function populateSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);const currentVal=select.value;select.innerHTML='<option value=\"\">Select a Device</option>';options.forEach(opt=>{const option=document.createElement('option');option.value=opt;option.textContent=opt;if(opt===selectedValue||opt===currentVal){option.selected=true}select.appendChild(option)})}function populateHidSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);select.innerHTML='';options.forEach(opt=>{const option=document.createElement('option');option.value=opt.path;option.textContent=opt.name;if(opt.path===selectedValue){option.selected=true}select.appendChild(option)})}document.addEventListener('DOMContentLoaded',()=>{populateSelect('client_select',{{ clients|tojson }},lastClient);populateSelect('serial_device_select',{{ serial_ports|tojson }},scannerDevice);populateHidSelect('hid_device_select',{{ hid_devices|tojson }},scannerDevice);document.querySelectorAll('input[name=\"scanner_mode\"]').forEach(radio=>{radio.addEventListener('change',toggleScannerInputs)});toggleScannerInputs();document.querySelectorAll('form[id^=\"edit-form-\"]').forEach(form=>{form.addEventListener('submit',function(e){e.preventDefault();const ratingKey=this.id.split('-').pop();const newBarcode=this.querySelector('input[name=\"barcode\"]').value;fetch('/edit_barcode/'+ratingKey,{method:'POST',body:new FormData(this)}).then(res=>res.json()).then(data=>{if(data.error){alert('Error: '+data.error)}else{document.getElementById('barcode-'+ratingKey).textContent=newBarcode;if(document.getElementById('poster-'+ratingKey).parentElement.style.display!=='none'){document.getElementById('poster-'+ratingKey).src='/poster/'+ratingKey+'?t='+(new Date).getTime()}toggleEdit(ratingKey);alert(data.message)}}).catch(err=>alert('Error: '+err.message))})});const pdfStatusText=document.getElementById('pdf-status-text'),pdfStartButton=document.getElementById('pdf-start-button'),pdfDownloadLink=document.getElementById('pdf-download-link'),pdfStopButton=document.getElementById('pdf-stop-button');let pdfStatusInterval=null;function checkPdfStatus(){fetch('/pdf_status').then(e=>e.json()).then(e=>{if(e.status==='running'){pdfStatusText.textContent='Status: Generating PDFs...';pdfStatusText.style.color='orange';pdfStartButton.style.display='none';pdfDownloadLink.style.display='none';pdfStopButton.style.display='inline-block';if(!pdfStatusInterval){pdfStatusInterval=setInterval(checkPdfStatus,5000)}}else{pdfStopButton.style.display='none';if(e.status==='complete'){pdfStatusText.textContent='Status: Generation Complete!';pdfStatusText.style.color='green';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='inline-block'}else if(e.status.startsWith('error')){pdfStatusText.textContent='Status: '+e.status;pdfStatusText.style.color='red';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='none'}else{pdfStatusText.textContent='';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='none'}clearInterval(pdfStatusInterval);pdfStatusInterval=null}})}checkPdfStatus();pdfStartButton.addEventListener('click',()=>{if(!pdfStatusInterval){pdfStatusInterval=setInterval(checkPdfStatus,5000)}});const themeToggle=document.getElementById('theme-toggle');function updateThemeIcon(isDark){themeToggle.textContent=isDark?'🌙':'☀️'}themeToggle.addEventListener('click',()=>{let isDark=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',isDark?'dark':'light');updateThemeIcon(isDark)});if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}const eventSource=new EventSource('/stream');eventSource.onmessage=function(event){const data=JSON.parse(event.data);document.getElementById('status-box').textContent=data.message}});function toggleScannerInputs(){const mode=document.querySelector('input[name=\"scanner_mode\"]:checked').value;document.getElementById('serial-group').style.display=mode==='serial'?'block':'none';document.getElementById('hid-group').style.display=mode==='hid'?'block':'none'}function togglePoster(ratingKey){const container=document.getElementById('poster-container-'+ratingKey);const img=document.getElementById('poster-'+ratingKey);if(container.style.display==='none'){img.src=img.dataset.src;container.style.display='block'}else{container.style.display='none'}}function toggleEdit(ratingKey){const span=document.getElementById('barcode-'+ratingKey);const form=document.getElementById('edit-form-'+ratingKey);if(span.style.display==='none'){span.style.display='inline';form.style.display='none'}else{span.style.display='none';form.style.display='inline-block'}}function playMedia(ratingKey){fetch('/play/'+ratingKey,{method:'POST'}).then(res=>{if(!res.ok){res.text().then(text=>alert('Error: '+text))}}).catch(err=>alert('Error: '+err.message))}function refreshClients(){fetch('/refresh_clients',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateSelect('client_select',data.clients,lastClient);alert('Client list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshSerialPorts(){fetch('/refresh_serial_ports',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateSelect('serial_device_select',data.ports,null);alert('Serial port list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshHidDevices(){fetch('/refresh_hid_devices',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateHidSelect('hid_device_select',data.devices,null);alert('HID device list refreshed!')}).catch(err=>alert('Error: '+err.message))}let searchTimeout;function debounceSearch(){clearTimeout(searchTimeout);searchTimeout=setTimeout(applyFilters,500)}function applyGenreFilter(){applyFilters()}function applyFilters(){const searchVal=document.getElementById('search-input').value;const genreVal=document.getElementById('genre-filter').value;let newUrl='/?page=1&per_page={{ per_page }}';if(searchVal){newUrl+='&search='+encodeURIComponent(searchVal)}if(genreVal){newUrl+='&genre='+encodeURIComponent(genreVal)}window.location.href=newUrl}function clearSearch(){window.location.href='/?page=1&per_page={{ per_page }}'}</script></body></html>" > templates/index.html
 
 # ----------------------------------------------------------------------
 # -------- 7. Other HTML Templates & CSS -------------------------------
@@ -853,6 +889,7 @@ echo "import serial" >> barcode_listener.py
 echo "import time" >> barcode_listener.py
 echo "import os" >> barcode_listener.py
 echo "import requests" >> barcode_listener.py
+echo "import json" >> barcode_listener.py
 echo "from plexapi.server import PlexServer" >> barcode_listener.py
 echo "import pychromecast" >> barcode_listener.py
 echo "try:" >> barcode_listener.py
@@ -966,45 +1003,54 @@ echo "        try:" >> barcode_listener.py
 echo "            casts, _ = pychromecast.get_listed_chromecasts(friendly_names=[target_device_name])" >> barcode_listener.py
 echo "            if casts: is_chromecast = True" >> barcode_listener.py
 echo "        except Exception: log('Chromecast discovery failed.')" >> barcode_listener.py
-echo "        if not is_chromecast:" >> barcode_listener.py
+echo "        max_retries = 3" >> barcode_listener.py
+echo "        retry_delay = 3" >> barcode_listener.py
+echo "        for attempt in range(max_retries):" >> barcode_listener.py
 echo "            try:" >> barcode_listener.py
-echo "                log(f'Initiating first playback for {target_device_name}...')" >> barcode_listener.py
-echo "                client = plex_server.client(target_device_name)" >> barcode_listener.py
-echo "                client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
-echo "                time.sleep(2)" >> barcode_listener.py
-echo "                log('Stopping initial stream...')" >> barcode_listener.py
-echo "                client.stop()" >> barcode_listener.py
-echo "                time.sleep(2)" >> barcode_listener.py
-echo "                log('Re-acquiring client and initiating second playback...')" >> barcode_listener.py
-echo "                client = plex_server.client(target_device_name)" >> barcode_listener.py
-echo "                client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
-echo "                log(f'Playback sequence completed for {target_device_name}.')" >> barcode_listener.py
-echo "            except Exception as e: log(f'Failed to control standard client {target_device_name}: {e}')" >> barcode_listener.py
-echo "        else: # Chromecast Logic" >> barcode_listener.py
-echo "            try:" >> barcode_listener.py
-echo "                plex_client = None" >> barcode_listener.py
-echo "                log(f'Starting Chromecast wake-up sequence for {target_device_name}.')" >> barcode_listener.py
-echo "                casts[0].wait()" >> barcode_listener.py
-echo "                target_uuid = str(casts[0].cast_info.uuid).replace('-', '')" >> barcode_listener.py
-echo "                if casts[0].app_id != PLEX_APP_ID:" >> barcode_listener.py
-echo "                    log('Plex app is not running. Launching app...')" >> barcode_listener.py
-echo "                    casts[0].start_app(PLEX_APP_ID)" >> barcode_listener.py
-echo "                    for _ in range(10):" >> barcode_listener.py
-echo "                        time.sleep(2)" >> barcode_listener.py
-echo "                        try:" >> barcode_listener.py
-echo "                            for client in plex_server.clients():" >> barcode_listener.py
-echo "                                if client.machineIdentifier == target_uuid: plex_client = client; break" >> barcode_listener.py
-echo "                            if plex_client: break" >> barcode_listener.py
-echo "                        except Exception: pass" >> barcode_listener.py
-echo "                if not plex_client:" >> barcode_listener.py
-echo "                    for client in plex_server.clients():" >> barcode_listener.py
-echo "                        if client.machineIdentifier == target_uuid: plex_client = client; break" >> barcode_listener.py
-echo "                if plex_client:" >> barcode_listener.py
-echo "                    client_name = getattr(plex_client, \"name\", plex_client.title)" >> barcode_listener.py
-echo "                    log(f'UUID match found! Client name is \"{client_name}\".')" >> barcode_listener.py
-echo "                    plex_client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
-echo "                else: log('ERROR: Could not find a matching client on Plex Server after wake-up.')" >> barcode_listener.py
-echo "            except Exception as e: log(f'Chromecast control sequence failed: {e}')" >> barcode_listener.py
+echo "                if not is_chromecast:" >> barcode_listener.py
+echo "                    log(f'Attempting playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> barcode_listener.py
+echo "                    client = plex_server.client(target_device_name)" >> barcode_listener.py
+echo "                    client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
+echo "                    time.sleep(2)" >> barcode_listener.py
+echo "                    client.stop()" >> barcode_listener.py
+echo "                    time.sleep(2)" >> barcode_listener.py
+echo "                    client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
+echo "                    log(f'Playback sequence completed for {target_device_name}.')" >> barcode_listener.py
+echo "                else:" >> barcode_listener.py
+echo "                    log(f'Attempting Chromecast playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> barcode_listener.py
+echo "                    plex_client = None" >> barcode_listener.py
+echo "                    casts[0].wait()" >> barcode_listener.py
+echo "                    target_uuid = str(casts[0].cast_info.uuid).replace('-', '')" >> barcode_listener.py
+echo "                    if casts[0].app_id != '9AC19493':" >> barcode_listener.py
+echo "                        log('Plex app is not running. Launching app...')" >> barcode_listener.py
+echo "                        casts[0].start_app('9AC19493')" >> barcode_listener.py
+echo "                        for _ in range(10):" >> barcode_listener.py
+echo "                            time.sleep(2)" >> barcode_listener.py
+echo "                            try:" >> barcode_listener.py
+echo "                                for c in plex_server.clients():" >> barcode_listener.py
+echo "                                    if c.machineIdentifier == target_uuid: plex_client = c; break" >> barcode_listener.py
+echo "                                if plex_client: break" >> barcode_listener.py
+echo "                            except Exception: pass" >> barcode_listener.py
+echo "                    if not plex_client:" >> barcode_listener.py
+echo "                        for c in plex_server.clients():" >> barcode_listener.py
+echo "                            if c.machineIdentifier == target_uuid: plex_client = c; break" >> barcode_listener.py
+echo "                    if plex_client:" >> barcode_listener.py
+echo "                        client_name = getattr(plex_client, \"name\", plex_client.title)" >> barcode_listener.py
+echo "                        log(f'UUID match found! Client name is \"{client_name}\".')" >> barcode_listener.py
+echo "                        plex_client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
+echo "                    else:" >> barcode_listener.py
+echo "                        raise ConnectionError('Could not find a matching Chromecast client on Plex Server after wake-up.')" >> barcode_listener.py
+echo "                return" >> barcode_listener.py
+echo "            except requests.exceptions.ConnectionError as e:" >> barcode_listener.py
+echo "                log(f'Playback failed on attempt {attempt + 1}: Connection refused or failed.')" >> barcode_listener.py
+echo "                if attempt < max_retries - 1:" >> barcode_listener.py
+echo "                    log(f'Retrying in {retry_delay} seconds...')" >> barcode_listener.py
+echo "                    time.sleep(retry_delay)" >> barcode_listener.py
+echo "                else:" >> barcode_listener.py
+echo "                    log('All playback attempts failed.')" >> barcode_listener.py
+echo "            except Exception as e:" >> barcode_listener.py
+echo "                log(f'An unexpected error occurred during playback: {e}')" >> barcode_listener.py
+echo "                return" >> barcode_listener.py
 echo "    except Exception as e: log(f'Top-level playback error: {e}')" >> barcode_listener.py
 echo "" >> barcode_listener.py
 echo "def handle_barcode(barcode):" >> barcode_listener.py
