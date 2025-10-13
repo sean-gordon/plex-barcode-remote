@@ -23,7 +23,7 @@ sudo apt-get install -y python3 python3-venv python3-pip sqlite3 net-tools lsof 
 # ----------------------------------------------------------------------
 echo "[1/9] Setting up project directories..."
 rm -rf "$PROJECT_DIR"
-mkdir -p "$PROJECT_DIR/templates" "$PROJECT_DIR/static"
+mkdir -p "$PROJECT_DIR/templates" "$PROJECT_DIR/static/generated_pdfs"
 mkdir -p "$PERSISTENT_DIR/poster_cache"
 cd "$PROJECT_DIR"
 
@@ -34,7 +34,7 @@ echo "[2/9] Setting up Python virtual environment and dependencies..."
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip uninstall -y fpdf fpdf2 || true
+pip uninstall -y fpdf fpdf2 keyboard || true
 pip install flask requests plexapi pillow python-barcode pyserial evdev pychromecast fpdf2 Flask-SSE Flask-Login Werkzeug
 
 # ----------------------------------------------------------------------
@@ -158,7 +158,7 @@ echo "        db_connection.commit()" >> sync_plex_library.py
 echo "        log(f'Verified and created barcodes for {count} items.', conn=db_connection)" >> sync_plex_library.py
 echo "        log('Plex library sync complete.', conn=db_connection)" >> sync_plex_library.py
 echo "    except Exception as e:" >> sync_plex_library.py
-echo "        log(f'An error occurred during sync: {e}', conn=db_connection)" >> sync_plex_library.py
+echo "        log(f'An error occurred during sync: {e}', conn=conn)" >> sync_plex_library.py
 echo "    finally:" >> sync_plex_library.py
 echo "        db_connection.close()" >> sync_plex_library.py
 echo "" >> sync_plex_library.py
@@ -171,10 +171,10 @@ echo "import sqlite3" >> generate_pdf_task.py
 echo "import io" >> generate_pdf_task.py
 echo "import random" >> generate_pdf_task.py
 echo "import time" >> generate_pdf_task.py
-echo "import zipfile" >> generate_pdf_task.py
 echo "import shutil" >> generate_pdf_task.py
 echo "import gc" >> generate_pdf_task.py
 echo "import sys" >> generate_pdf_task.py
+echo "import json" >> generate_pdf_task.py
 echo "from plexapi.server import PlexServer" >> generate_pdf_task.py
 echo "from PIL import Image, ImageDraw" >> generate_pdf_task.py
 echo "import barcode" >> generate_pdf_task.py
@@ -184,10 +184,10 @@ echo "from fpdf import FPDF" >> generate_pdf_task.py
 echo "" >> generate_pdf_task.py
 echo "DB_PATH = os.path.expanduser('~/.config/plex_barcode_remote/barcodes.db')" >> generate_pdf_task.py
 echo "CACHE_DIR = os.path.expanduser('~/.config/plex_barcode_remote/poster_cache')" >> generate_pdf_task.py
-echo "OUTPUT_ZIP = os.path.expanduser('~/plex_barcode_remote/static/plex_posters.zip')" >> generate_pdf_task.py
+echo "OUTPUT_DIR = os.path.expanduser('~/plex_barcode_remote/static/generated_pdfs')" >> generate_pdf_task.py
 echo "STATUS_FILE = os.path.expanduser('~/plex_barcode_remote/static/pdf_status.txt')" >> generate_pdf_task.py
+echo "FILES_JSON = os.path.expanduser('~/plex_barcode_remote/static/pdf_files.json')" >> generate_pdf_task.py
 echo "PID_FILE = os.path.expanduser('~/plex_barcode_remote/static/pdf_task.pid')" >> generate_pdf_task.py
-echo "TEMP_DIR = '/tmp/pdf_gen'" >> generate_pdf_task.py
 echo "BATCH_SIZE = 25" >> generate_pdf_task.py
 echo "POSTER_WIDTH = 300" >> generate_pdf_task.py
 echo "POSTER_HEIGHT = 450" >> generate_pdf_task.py
@@ -268,8 +268,8 @@ echo "        log(f\"PDF generation started for rating: '{selected_rating}'\")" 
 echo "    else:" >> generate_pdf_task.py
 echo "        selected_rating = None" >> generate_pdf_task.py
 echo "        log(\"PDF generation started for all ratings.\")" >> generate_pdf_task.py
-echo "    if os.path.exists(TEMP_DIR): shutil.rmtree(TEMP_DIR)" >> generate_pdf_task.py
-echo "    os.makedirs(TEMP_DIR)" >> generate_pdf_task.py
+echo "    shutil.rmtree(OUTPUT_DIR, ignore_errors=True)" >> generate_pdf_task.py
+echo "    os.makedirs(OUTPUT_DIR, exist_ok=True)" >> generate_pdf_task.py
 echo "    try:" >> generate_pdf_task.py
 echo "        with open(STATUS_FILE, 'w') as f: f.write('running')" >> generate_pdf_task.py
 echo "        plex = get_plex_server()" >> generate_pdf_task.py
@@ -294,7 +294,7 @@ echo "            rating = item['contentRating']" >> generate_pdf_task.py
 echo "            if rating not in grouped_media: grouped_media[rating] = []" >> generate_pdf_task.py
 echo "            grouped_media[rating].append(item)" >> generate_pdf_task.py
 echo "        if not grouped_media: raise ValueError('No media found after grouping.')" >> generate_pdf_task.py
-echo "        pdf_files = []" >> generate_pdf_task.py
+echo "        generated_files = []" >> generate_pdf_task.py
 echo "        for rating, items in grouped_media.items():" >> generate_pdf_task.py
 echo "            for i in range(0, len(items), BATCH_SIZE):" >> generate_pdf_task.py
 echo "                batch = items[i:i + BATCH_SIZE]" >> generate_pdf_task.py
@@ -355,18 +355,16 @@ echo "                        y += card_h" >> generate_pdf_task.py
 echo "                    item_count += 1" >> generate_pdf_task.py
 echo "                    gc.collect()" >> generate_pdf_task.py
 echo "                pdf_filename = f'Posters-{rating.replace(\"/\", \"_\")}-part{part_num}.pdf'" >> generate_pdf_task.py
-echo "                pdf_path = os.path.join(TEMP_DIR, pdf_filename)" >> generate_pdf_task.py
+echo "                pdf_path = os.path.join(OUTPUT_DIR, pdf_filename)" >> generate_pdf_task.py
 echo "                pdf.output(pdf_path)" >> generate_pdf_task.py
-echo "                pdf_files.append(pdf_path)" >> generate_pdf_task.py
-echo "        log(f'Generated {len(pdf_files)} PDF files. Now creating ZIP...')" >> generate_pdf_task.py
-echo "        with zipfile.ZipFile(OUTPUT_ZIP, 'w') as zf:" >> generate_pdf_task.py
-echo "            for f in pdf_files: zf.write(f, os.path.basename(f))" >> generate_pdf_task.py
+echo "                generated_files.append(pdf_filename)" >> generate_pdf_task.py
+echo "        log(f'Generated {len(generated_files)} PDF files.')" >> generate_pdf_task.py
+echo "        with open(FILES_JSON, 'w') as f:" >> generate_pdf_task.py
+echo "            json.dump(generated_files, f)" >> generate_pdf_task.py
 echo "        with open(STATUS_FILE, 'w') as f: f.write('complete')" >> generate_pdf_task.py
 echo "    except Exception as e:" >> generate_pdf_task.py
 echo "        log(f'Error during PDF generation: {e}')" >> generate_pdf_task.py
 echo "        with open(STATUS_FILE, 'w') as f: f.write(f'error: {e}')" >> generate_pdf_task.py
-echo "    finally:" >> generate_pdf_task.py
-echo "        if os.path.exists(TEMP_DIR): shutil.rmtree(TEMP_DIR)" >> generate_pdf_task.py
 echo "if __name__ == '__main__':" >> generate_pdf_task.py
 echo "    main()" >> generate_pdf_task.py
 
@@ -384,6 +382,7 @@ echo "import time" >> web_dashboard.py
 echo "import glob" >> web_dashboard.py
 echo "import json" >> web_dashboard.py
 echo "import signal" >> web_dashboard.py
+echo "import evdev" >> web_dashboard.py
 echo "from flask import Flask, render_template, request, redirect, url_for, send_file, jsonify, flash" >> web_dashboard.py
 echo "from flask_sse import sse" >> web_dashboard.py
 echo "from plexapi.server import PlexServer" >> web_dashboard.py
@@ -466,8 +465,13 @@ echo "" >> web_dashboard.py
 echo "def get_hid_devices():" >> web_dashboard.py
 echo "    devices = []" >> web_dashboard.py
 echo "    try:" >> web_dashboard.py
-echo "        for path in glob.glob('/dev/input/by-id/*-event-kbd'):" >> web_dashboard.py
-echo "            devices.append({'path': os.path.realpath(path), 'name': os.path.basename(path)})" >> web_dashboard.py
+echo "        for path in glob.glob('/dev/input/event*'):" >> web_dashboard.py
+echo "            try:" >> web_dashboard.py
+echo "                device = evdev.InputDevice(path)" >> web_dashboard.py
+echo "                if evdev.ecodes.EV_KEY in device.capabilities():" >> web_dashboard.py
+echo "                    devices.append({'path': path, 'name': device.name})" >> web_dashboard.py
+echo "            except Exception:" >> web_dashboard.py
+echo "                pass # Ignore devices we can't open" >> web_dashboard.py
 echo "    except Exception as e:" >> web_dashboard.py
 echo "        log(f'Error scanning for HID devices: {e}')" >> web_dashboard.py
 echo "    return devices" >> web_dashboard.py
@@ -609,16 +613,30 @@ echo "    scanner_mode = settings.get('scanner_mode', 'serial')" >> web_dashboar
 echo "    scanner_device = settings.get('scanner_device', '/dev/ttyACM0')" >> web_dashboard.py
 echo "    serial_ports = [port.device for port in list_ports.comports()]" >> web_dashboard.py
 echo "    hid_devices = get_hid_devices()" >> web_dashboard.py
-echo "    status_file = os.path.join(PROJECT_DIR, 'static', 'pdf_status.txt')" >> web_dashboard.py
-echo "    pdf_status = ''" >> web_dashboard.py
-echo "    if os.path.exists(status_file):" >> web_dashboard.py
-echo "        with open(status_file, 'r') as f: pdf_status = f.read().strip()" >> web_dashboard.py
 echo "    return render_template('index.html'," >> web_dashboard.py
 echo "        items=paginated_items, last_client=last_client, scanner_mode=scanner_mode," >> web_dashboard.py
 echo "        scanner_device=scanner_device, serial_ports=serial_ports, hid_devices=hid_devices," >> web_dashboard.py
 echo "        page=page, per_page=per_page, total_items=total_items," >> web_dashboard.py
 echo "        total_pages=total_pages, search_term=search_term, genre_filter=genre_filter," >> web_dashboard.py
-echo "        genres=sorted(all_genres), clients=known_clients, pdf_status=pdf_status, ratings=all_ratings)" >> web_dashboard.py
+echo "        genres=sorted(all_genres), clients=known_clients, ratings=all_ratings)" >> web_dashboard.py
+echo "" >> web_dashboard.py
+echo "@app.route('/edit_barcode/<rating_key>', methods=['POST'])" >> web_dashboard.py
+echo "@login_required" >> web_dashboard.py
+echo "def edit_barcode(rating_key):" >> web_dashboard.py
+echo "    new_barcode = request.form.get('barcode')" >> web_dashboard.py
+echo "    if not new_barcode or not new_barcode.isdigit() or len(new_barcode) < 12:" >> web_dashboard.py
+echo "        return jsonify({'error': 'Invalid barcode format. Must be 12+ digits.'}), 400" >> web_dashboard.py
+echo "    try:" >> web_dashboard.py
+echo "        with get_db() as conn:" >> web_dashboard.py
+echo "            conn.execute('UPDATE barcodes SET barcode = ? WHERE rating_key = ?', (new_barcode, rating_key))" >> web_dashboard.py
+echo "            conn.commit()" >> web_dashboard.py
+echo "        log(f'Updated barcode for rating key {rating_key} to {new_barcode}')" >> web_dashboard.py
+echo "        return jsonify({'message': 'Barcode updated successfully!'})" >> web_dashboard.py
+echo "    except sqlite3.IntegrityError:" >> web_dashboard.py
+echo "        return jsonify({'error': 'That barcode is already in use by another item.'}), 400" >> web_dashboard.py
+echo "    except Exception as e:" >> web_dashboard.py
+echo "        log(f'Error updating barcode: {e}')" >> web_dashboard.py
+echo "        return jsonify({'error': 'An internal error occurred.'}), 500" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "@app.route('/actor/<path:actor_name>')" >> web_dashboard.py
 echo "@login_required" >> web_dashboard.py
@@ -699,15 +717,10 @@ echo "        target_device_name = client_row['value'] if client_row else None" 
 echo "    if not target_device_name: return 'No device selected', 400" >> web_dashboard.py
 echo "    try:" >> web_dashboard.py
 echo "        media = plex.fetchItem(int(rating_key))" >> web_dashboard.py
+echo "        log(f'Playing \"{media.title}\" on {target_device_name}')" >> web_dashboard.py
 echo "    except Exception as e:" >> web_dashboard.py
 echo "        log(f'Error fetching media for {rating_key}: {e}')" >> web_dashboard.py
 echo "        return 'Error fetching media', 500" >> web_dashboard.py
-echo "    media_to_play, offset_ms = media, 0" >> web_dashboard.py
-echo "    if media.type == 'show':" >> web_dashboard.py
-echo "        episodes = sorted(media.episodes(), key=lambda e: (e.seasonNumber, e.episodeNumber))" >> web_dashboard.py
-echo "        resume_ep = next((ep for ep in episodes if getattr(ep, 'viewCount', 0) and getattr(ep, 'viewOffset', 0)), None)" >> web_dashboard.py
-echo "        if not resume_ep: resume_ep = next((ep for ep in episodes if not getattr(ep, 'viewCount', 0)), episodes[0] if episodes else None)" >> web_dashboard.py
-echo "        if resume_ep: media_to_play, offset_ms = resume_ep, getattr(resume_ep, 'viewOffset', 0) or 0" >> web_dashboard.py
 echo "    is_chromecast = False" >> web_dashboard.py
 echo "    try:" >> web_dashboard.py
 echo "        casts, _ = pychromecast.get_listed_chromecasts(friendly_names=[target_device_name])" >> web_dashboard.py
@@ -720,12 +733,8 @@ echo "        try:" >> web_dashboard.py
 echo "            if not is_chromecast:" >> web_dashboard.py
 echo "                log(f'Attempting playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> web_dashboard.py
 echo "                client = plex.client(target_device_name)" >> web_dashboard.py
-echo "                client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
-echo "                time.sleep(2)" >> web_dashboard.py
-echo "                client.stop()" >> web_dashboard.py
-echo "                time.sleep(2)" >> web_dashboard.py
-echo "                client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
-echo "                log(f'Playback sequence completed for {target_device_name}.')" >> web_dashboard.py
+echo "                client.playMedia(media)" >> web_dashboard.py
+echo "                log(f'Playback command sent for \"{media.title}\" to {target_device_name}.')" >> web_dashboard.py
 echo "            else:" >> web_dashboard.py
 echo "                log(f'Attempting Chromecast playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> web_dashboard.py
 echo "                plex_client = None" >> web_dashboard.py
@@ -747,7 +756,7 @@ echo "                        if c.machineIdentifier == target_uuid: plex_client
 echo "                if plex_client:" >> web_dashboard.py
 echo "                    client_name = getattr(plex_client, \"name\", plex_client.title)" >> web_dashboard.py
 echo "                    log(f'UUID match found! Client name is \"{client_name}\".')" >> web_dashboard.py
-echo "                    plex_client.playMedia(media_to_play, offset=offset_ms)" >> web_dashboard.py
+echo "                    plex_client.playMedia(media)" >> web_dashboard.py
 echo "                else:" >> web_dashboard.py
 echo "                    raise ConnectionError('Could not find a matching Chromecast client on Plex Server after wake-up.')" >> web_dashboard.py
 echo "            return 'OK'" >> web_dashboard.py
@@ -769,7 +778,7 @@ echo "@login_required" >> web_dashboard.py
 echo "def start_pdf_generation():" >> web_dashboard.py
 echo "    pid_file = os.path.join(PROJECT_DIR, 'static', 'pdf_task.pid')" >> web_dashboard.py
 echo "    status_file = os.path.join(PROJECT_DIR, 'static', 'pdf_status.txt')" >> web_dashboard.py
-echo "    zip_file = os.path.join(PROJECT_DIR, 'static', 'plex_posters.zip')" >> web_dashboard.py
+echo "    files_json = os.path.join(PROJECT_DIR, 'static', 'pdf_files.json')" >> web_dashboard.py
 echo "    if os.path.exists(pid_file):" >> web_dashboard.py
 echo "        try:" >> web_dashboard.py
 echo "            with open(pid_file, 'r') as f:" >> web_dashboard.py
@@ -785,7 +794,7 @@ echo "    log('Waiting 2 seconds before starting new task...')" >> web_dashboard
 echo "    time.sleep(2)" >> web_dashboard.py
 echo "    log('Cleaning up old files before new generation.')" >> web_dashboard.py
 echo "    if os.path.exists(status_file): os.remove(status_file)" >> web_dashboard.py
-echo "    if os.path.exists(zip_file): os.remove(zip_file)" >> web_dashboard.py
+echo "    if os.path.exists(files_json): os.remove(files_json)" >> web_dashboard.py
 echo "    if os.path.exists(pid_file): os.remove(pid_file)" >> web_dashboard.py
 echo "    selected_rating = request.args.get('rating', 'all')" >> web_dashboard.py
 echo "    log(f'Starting new background PDF generation task for rating: {selected_rating}.')" >> web_dashboard.py
@@ -830,6 +839,16 @@ echo "    if os.path.exists(status_file):" >> web_dashboard.py
 echo "        with open(status_file, 'r') as f: status = f.read().strip()" >> web_dashboard.py
 echo "    return jsonify({'status': status})" >> web_dashboard.py
 echo "" >> web_dashboard.py
+echo "@app.route('/get_pdf_files')" >> web_dashboard.py
+echo "@login_required" >> web_dashboard.py
+echo "def get_pdf_files():" >> web_dashboard.py
+echo "    files_json_path = os.path.join(PROJECT_DIR, 'static', 'pdf_files.json')" >> web_dashboard.py
+echo "    if os.path.exists(files_json_path):" >> web_dashboard.py
+echo "        with open(files_json_path, 'r') as f:" >> web_dashboard.py
+echo "            files = json.load(f)" >> web_dashboard.py
+echo "        return jsonify(files)" >> web_dashboard.py
+echo "    return jsonify([])" >> web_dashboard.py
+echo "" >> web_dashboard.py
 echo "@app.route('/publish_status', methods=['POST'])" >> web_dashboard.py
 echo "def publish_status():" >> web_dashboard.py
 echo "    message = request.json.get('message')" >> web_dashboard.py
@@ -855,6 +874,26 @@ echo "        log(f'Refreshed clients: Found {len(client_names)} total devices')
 echo "        return jsonify({'clients': client_names})" >> web_dashboard.py
 echo "    except Exception as e:" >> web_dashboard.py
 echo "        log(f'Error refreshing clients: {e}')" >> web_dashboard.py
+echo "        return jsonify({'error': str(e)}), 500" >> web_dashboard.py
+echo "" >> web_dashboard.py
+echo "@app.route('/refresh_serial_ports', methods=['POST'])" >> web_dashboard.py
+echo "@login_required" >> web_dashboard.py
+echo "def refresh_serial_ports():" >> web_dashboard.py
+echo "    try:" >> web_dashboard.py
+echo "        ports = [port.device for port in list_ports.comports()]" >> web_dashboard.py
+echo "        return jsonify({'ports': ports})" >> web_dashboard.py
+echo "    except Exception as e:" >> web_dashboard.py
+echo "        log(f'Error refreshing serial ports: {e}')" >> web_dashboard.py
+echo "        return jsonify({'error': str(e)}), 500" >> web_dashboard.py
+echo "" >> web_dashboard.py
+echo "@app.route('/refresh_hid_devices', methods=['POST'])" >> web_dashboard.py
+echo "@login_required" >> web_dashboard.py
+echo "def refresh_hid_devices():" >> web_dashboard.py
+echo "    try:" >> web_dashboard.py
+echo "        devices = get_hid_devices()" >> web_dashboard.py
+echo "        return jsonify({'devices': devices})" >> web_dashboard.py
+echo "    except Exception as e:" >> web_dashboard.py
+echo "        log(f'Error refreshing HID devices: {e}')" >> web_dashboard.py
 echo "        return jsonify({'error': str(e)}), 500" >> web_dashboard.py
 echo "" >> web_dashboard.py
 echo "@app.route('/select_client', methods=['POST'])" >> web_dashboard.py
@@ -900,7 +939,7 @@ echo "<!DOCTYPE html><html><head><title>Login - Plex Barcode Remote</title><link
 
 echo "<!DOCTYPE html><html><head><title>Plex Barcode Dashboard - Setup</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Server Setup <button id=\"theme-toggle\">☀️</button></h1><div class='form-container'>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}{% if errors %}<div class='error'><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}<form method='POST' action='/setup'><h3>Plex & TMDB Settings</h3><div class='form-group'><label>Protocol:</label><input type='radio' name='protocol' value='http' {% if defaults.plex_protocol == 'http' %}checked{% endif %}> HTTP <input type='radio' name='protocol' value='https' {% if defaults.plex_protocol == 'https' %}checked{% endif %}> HTTPS</div><div class='form-group'><label for='url'>URL or IP Address:</label><input type='text' id='url' name='url' value='{{ defaults.plex_url }}' placeholder='e.g., 192.168.1.100'></div><div class='form-group'><label for='port'>Port:</label><input type='number' id='port' name='port' value='{{ defaults.plex_port }}' placeholder='e.g., 32400' min='1' max='65535'></div><div class='form-group'><label for='token'>Plex Token:</label><input type='text' id='token' name='token' value='{{ defaults.plex_token }}' placeholder='Enter your Plex token'><p><a href='https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/' target='_blank'>How to find your Plex token</a></p></div><div class='form-group'><label for='tmdb_api_key'>TMDB API Key (Optional):</label><input type='text' id='tmdb_api_key' name='tmdb_api_key' value='{{ defaults.tmdb_api_key }}' placeholder='For missing barcode lookup'><p><a href='https://www.themoviedb.org/settings/api' target='_blank'>How to get a TMDB API key</a></p></div><hr><h3>User Management</h3><div class='form-group'><label for='new_username'>Change Username</label><input type='text' id='new_username' name='new_username' placeholder=\"Current: {{ current_user.username }}\"></div><div class='form-group'><label for='new_password'>Change Password</label><input type='password' id='new_password' name='new_password' placeholder='Leave blank to keep current password'></div><button type='submit'>Save Settings</button></form><p style='margin-top: 20px;'><a href=\"{{ url_for('index') }}\" class=\"button-link\">Back to Dashboard</a></p></div><script>document.getElementById('theme-toggle').addEventListener('click',()=>{let e=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',e?'dark':'light');updateThemeIcon(e)});function updateThemeIcon(e){document.getElementById('theme-toggle').textContent=e?'🌙':'☀️'}if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}</script></body></html>" > templates/setup.html
 
-echo "<!DOCTYPE html><html><head><title>Plex Barcode Dashboard</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Barcode Dashboard <button id=\"theme-toggle\">☀️</button></h1>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class='flash-container'>{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}<div class='controls-grid'><div class='control-group'><h3>Live Status</h3><div id=\"status-box\">Ready...</div></div><div class='control-group'><h3>Playback Target</h3><form method='POST' action='/select_client'><label for='client'>Target Device:</label><select name='client' id='client_select'><option value=''>Select a Device</option></select><button type='submit'>Set</button><button type='button' onclick='refreshClients()'>Refresh Clients</button></form>{% if last_client %}<p style='color:green;'>Selected Target: <strong>{{ last_client }}</strong></p>{% endif %}</div><div class='control-group'><h3>Scanner Settings</h3><form method='POST' action='/save_scanner_settings' id='scanner-form'><div class='radio-group'><label><input type='radio' name='scanner_mode' value='serial' {% if scanner_mode == 'serial' %}checked{% endif %}> Serial</label><label><input type='radio' name='scanner_mode' value='hid' {% if scanner_mode == 'hid' %}checked{% endif %}> HID Keyboard</label></div><div id='serial-group'><label for='serial_device'>Serial Port:</label><select name='serial_device' id='serial_device_select'></select></div><div id='hid-group'><label for='hid_device'>HID Device:</label><select name='hid_device' id='hid_device_select'></select></div><button type='submit'>Save & Restart Listener</button></form><div class='button-group'><button onclick='refreshSerialPorts()'>Refresh Serial</button><button onclick='refreshHidDevices()'>Refresh HID</button></div></div><div class='control-group'><h3>System</h3><div class='button-group'><button onclick=\"window.location.href='/setup'\">Plex Setup</button><button onclick=\"window.location.href='/logs'\">View Logs</button><select id=\"rating-filter\" style=\"padding: 5px;\"><option value=\"all\">All Age Ratings</option>{% for rating in ratings %}<option value=\"{{ rating }}\">{{ rating }}</option>{% endfor %}</select><button id=\"pdf-start-button\" onclick=\"startPdfGeneration()\">Start PDF Generation</button><a href=\"/stop_pdf_generation\" id=\"pdf-stop-button\" class=\"button-link\" style=\"display:none; background-color: #dc3545;\">Force Stop</a><a href=\"/static/plex_posters.zip\" id=\"pdf-download-link\" class=\"button-link\" style=\"display:none;\">Download PDFs</a><a href=\"{{ url_for('logout') }}\" class=\"button-link\">Logout</a></div><p id=\"pdf-status-text\" style=\"margin-top:10px;\"></p></div></div><div class='search-container'><input type='text' id='search-input' placeholder='Search by title...' value='{{ search_term }}' oninput='debounceSearch()'><select id='genre-filter' onchange='applyGenreFilter()'><option value=''>All Genres</option>{% for genre in genres %}<option value='{{ genre }}' {% if genre == genre_filter %}selected{% endif %}>{{ genre }}</option>{% endfor %}</select><button onclick='clearSearch()'>Clear</button></div><table><thead><tr><th>Title</th><th>Year</th><th>Type</th><th>Director</th><th>Actors</th><th>Barcode</th><th>Actions</th></tr></thead><tbody>{% for item in items %}<tr><td>{{ item.title }}</td><td>{{ item.year }}</td><td>{{ item.type }}</td><td>{% for director in item.directors %}<a href=\"/director/{{ director|urlencode }}\">{{ director }}</a>{% endfor %}</td><td>{% for actor in item.actors %}<a href=\"/actor/{{ actor|urlencode }}\">{{ actor }}</a><br>{% endfor %}</td><td><span id='barcode-{{ item.rating_key }}'>{{ item.barcode }}</span><form style='display:none' id='edit-form-{{ item.rating_key }}'><input type='text' name='barcode' value='{{ item.barcode }}' pattern='\\d{12,13}' title='Barcode must be 12 or 13 digits' required><button type='submit'>Save</button><button type='button' onclick=\"toggleEdit('{{ item.rating_key }}')\">Cancel</button></form></td><td><button onclick=\"playMedia('{{ item.rating_key }}')\">Play</button><button onclick=\"togglePoster('{{ item.rating_key }}')\">Poster</button><a class='button-link' href='/poster/{{ item.rating_key }}?download=true' download>Download</a><button onclick=\"toggleEdit('{{ item.rating_key }}')\">Edit Barcode</button><div id='poster-container-{{ item.rating_key }}' style='display:none;margin-top:10px;'><img id='poster-{{ item.rating_key }}' data-src='/poster/{{ item.rating_key }}' style='max-width:200px;' loading='lazy'></div></td></tr>{% endfor %}</tbody></table><div class='pagination'><button onclick=\"window.location.href='/?page={{ page - 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page <= 1 %}disabled{% endif %}>Prev</button><span>Page {{ page }} of {{ total_pages }} | Total items: {{ total_items }}</span><button onclick=\"window.location.href='/?page={{ page + 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page >= total_pages %}disabled{% endif %}>Next</button></div><script>const lastClient='{{ last_client }}';const scannerMode='{{ scanner_mode }}';const scannerDevice='{{ scanner_device }}';function populateSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);const currentVal=select.value;select.innerHTML='<option value=\"\">Select a Device</option>';options.forEach(opt=>{const option=document.createElement('option');option.value=opt;option.textContent=opt;if(opt===selectedValue||opt===currentVal){option.selected=true}select.appendChild(option)})}function populateHidSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);select.innerHTML='';options.forEach(opt=>{const option=document.createElement('option');option.value=opt.path;option.textContent=opt.name;if(opt.path===selectedValue){option.selected=true}select.appendChild(option)})}document.addEventListener('DOMContentLoaded',()=>{populateSelect('client_select',{{ clients|tojson }},lastClient);populateSelect('serial_device_select',{{ serial_ports|tojson }},scannerDevice);populateHidSelect('hid_device_select',{{ hid_devices|tojson }},scannerDevice);document.querySelectorAll('input[name=\"scanner_mode\"]').forEach(radio=>{radio.addEventListener('change',toggleScannerInputs)});toggleScannerInputs();document.querySelectorAll('form[id^=\"edit-form-\"]').forEach(form=>{form.addEventListener('submit',function(e){e.preventDefault();const ratingKey=this.id.split('-').pop();const newBarcode=this.querySelector('input[name=\"barcode\"]').value;fetch('/edit_barcode/'+ratingKey,{method:'POST',body:new FormData(this)}).then(res=>res.json()).then(data=>{if(data.error){alert('Error: '+data.error)}else{document.getElementById('barcode-'+ratingKey).textContent=newBarcode;if(document.getElementById('poster-'+ratingKey).parentElement.style.display!=='none'){document.getElementById('poster-'+ratingKey).src='/poster/'+ratingKey+'?t='+(new Date).getTime()}toggleEdit(ratingKey);alert(data.message)}}).catch(err=>alert('Error: '+err.message))})});const pdfStatusText=document.getElementById('pdf-status-text'),pdfStartButton=document.getElementById('pdf-start-button'),pdfDownloadLink=document.getElementById('pdf-download-link'),pdfStopButton=document.getElementById('pdf-stop-button');let pdfStatusInterval=null;function checkPdfStatus(){fetch('/pdf_status').then(e=>e.json()).then(e=>{if(e.status==='running'){pdfStatusText.textContent='Status: Generating PDFs...';pdfStatusText.style.color='orange';pdfStartButton.style.display='none';pdfDownloadLink.style.display='none';pdfStopButton.style.display='inline-block';if(!pdfStatusInterval){pdfStatusInterval=setInterval(checkPdfStatus,5000)}}else{pdfStopButton.style.display='none';if(e.status==='complete'){pdfStatusText.textContent='Status: Generation Complete!';pdfStatusText.style.color='green';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='inline-block'}else if(e.status.startsWith('error')){pdfStatusText.textContent='Status: '+e.status;pdfStatusText.style.color='red';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='none'}else{pdfStatusText.textContent='';pdfStartButton.style.display='inline-block';pdfDownloadLink.style.display='none'}clearInterval(pdfStatusInterval);pdfStatusInterval=null}})}checkPdfStatus();pdfStartButton.addEventListener('click',()=>{if(!pdfStatusInterval){pdfStatusInterval=setInterval(checkPdfStatus,5000)}});const themeToggle=document.getElementById('theme-toggle');function updateThemeIcon(isDark){themeToggle.textContent=isDark?'🌙':'☀️'}themeToggle.addEventListener('click',()=>{let isDark=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',isDark?'dark':'light');updateThemeIcon(isDark)});if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}const eventSource=new EventSource('/stream');eventSource.onmessage=function(event){const data=JSON.parse(event.data);document.getElementById('status-box').textContent=data.message;};});function toggleScannerInputs(){const mode=document.querySelector('input[name=\"scanner_mode\"]:checked').value;document.getElementById('serial-group').style.display=mode==='serial'?'block':'none';document.getElementById('hid-group').style.display=mode==='hid'?'block':'none'}function togglePoster(ratingKey){const container=document.getElementById('poster-container-'+ratingKey);const img=document.getElementById('poster-'+ratingKey);if(container.style.display==='none'){img.src=img.dataset.src;container.style.display='block'}else{container.style.display='none'}}function toggleEdit(ratingKey){const span=document.getElementById('barcode-'+ratingKey);const form=document.getElementById('edit-form-'+ratingKey);if(span.style.display==='none'){span.style.display='inline';form.style.display='none'}else{span.style.display='none';form.style.display='inline-block'}}function playMedia(ratingKey){fetch('/play/'+ratingKey,{method:'POST'}).then(res=>{if(!res.ok){res.text().then(text=>alert('Error: '+text))}}).catch(err=>alert('Error: '+err.message))}function refreshClients(){fetch('/refresh_clients',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateSelect('client_select',data.clients,lastClient);alert('Client list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshSerialPorts(){fetch('/refresh_serial_ports',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateSelect('serial_device_select',data.ports,null);alert('Serial port list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshHidDevices(){fetch('/refresh_hid_devices',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){throw new Error(data.error)}populateHidSelect('hid_device_select',data.devices,null);alert('HID device list refreshed!')}).catch(err=>alert('Error: '+err.message))}let searchTimeout;function debounceSearch(){clearTimeout(searchTimeout);searchTimeout=setTimeout(applyFilters,500)}function applyGenreFilter(){applyFilters()}function applyFilters(){const searchVal=document.getElementById('search-input').value;const genreVal=document.getElementById('genre-filter').value;let newUrl='/?page=1&per_page={{ per_page }}';if(searchVal){newUrl+='&search='+encodeURIComponent(searchVal)}if(genreVal){newUrl+='&genre='+encodeURIComponent(genreVal)}window.location.href=newUrl}function clearSearch(){window.location.href='/?page=1&per_page={{ per_page }}'}function startPdfGeneration(){const selectedRating=document.getElementById('rating-filter').value;const url=\`/start_pdf_generation?rating=\${encodeURIComponent(selectedRating)}\`;window.location.href=url}</script></body></html>" > templates/index.html
+echo "<!DOCTYPE html><html><head><title>Plex Barcode Dashboard</title><link rel=\"stylesheet\" href=\"{{ url_for('static', filename='style.css') }}\"></head><body><h1>Plex Barcode Dashboard <button id=\"theme-toggle\">☀️</button></h1>{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class='flash-container'>{% for category, message in messages %}<div class=\"flash {{ category }}\">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}<div class='controls-grid'><div class='control-group'><h3>Live Status</h3><div id=\"status-box\">Ready...</div></div><div class='control-group'><h3>Playback Target</h3><form method='POST' action='/select_client'><label for='client'>Target Device:</label><select name='client' id='client_select'><option value=''>Select a Device</option></select><button type='submit'>Set</button><button type='button' onclick='refreshClients()'>Refresh Clients</button></form>{% if last_client %}<p style='color:green;'>Selected Target: <strong>{{ last_client }}</strong></p>{% endif %}</div><div class='control-group'><h3>Scanner Settings</h3><form method='POST' action='/save_scanner_settings' id='scanner-form'><div class='radio-group'><label><input type='radio' name='scanner_mode' value='serial' {% if scanner_mode == 'serial' %}checked{% endif %}> Serial</label><label><input type='radio' name='scanner_mode' value='hid' {% if scanner_mode == 'hid' %}checked{% endif %}> HID Keyboard</label></div><div id='serial-group'><label for='serial_device'>Serial Port:</label><select name='serial_device' id='serial_device_select'></select></div><div id='hid-group' style='display:none;'><label for='hid_device'>HID Device:</label><select name='hid_device' id='hid_device_select'></select></div><button type='submit'>Save & Restart Listener</button></form><div class='button-group'><button onclick='refreshSerialPorts()'>Refresh Serial</button><button onclick='refreshHidDevices()'>Refresh HID</button></div></div><div class='control-group'><h3>System</h3><div class='button-group'><button onclick=\"window.location.href='/setup'\">Plex Setup</button><button onclick=\"window.location.href='/logs'\">View Logs</button><select id=\"rating-filter\" style=\"padding: 5px;\"><option value=\"all\">All Age Ratings</option>{% for rating in ratings %}<option value=\"{{ rating }}\">{{ rating }}</option>{% endfor %}</select><button id=\"pdf-start-button\" onclick=\"startPdfGeneration()\">Start PDF Generation</button><a href=\"/stop_pdf_generation\" id=\"pdf-stop-button\" class=\"button-link\" style=\"display:none; background-color: #dc3545;\">Force Stop</a><a href=\"{{ url_for('logout') }}\" class=\"button-link\">Logout</a></div><p id=\"pdf-status-text\" style=\"margin-top:10px;\"></p><div id=\"pdf-links-container\" style=\"margin-top: 10px;\"></div></div></div><div class='search-container'><input type='text' id='search-input' placeholder='Search by title...' value='{{ search_term }}' oninput='debounceSearch()'><select id='genre-filter' onchange='applyGenreFilter()'><option value=''>All Genres</option>{% for genre in genres %}<option value='{{ genre }}' {% if genre == genre_filter %}selected{% endif %}>{{ genre }}</option>{% endfor %}</select><button onclick='clearSearch()'>Clear</button></div><table><thead><tr><th>Title</th><th>Year</th><th>Type</th><th>Director</th><th>Actors</th><th>Barcode</th><th>Actions</th></tr></thead><tbody>{% for item in items %}<tr><td>{{ item.title }}</td><td>{{ item.year }}</td><td>{{ item.type }}</td><td>{% for director in item.directors %}<a href=\"/director/{{ director|urlencode }}\">{{ director }}</a>{% endfor %}</td><td>{% for actor in item.actors %}<a href=\"/actor/{{ actor|urlencode }}\">{{ actor }}</a><br>{% endfor %}</td><td><span id='barcode-{{ item.rating_key }}'>{{ item.barcode }}</span><form style='display:none' id='edit-form-{{ item.rating_key }}'><input type='text' name='barcode' value='{{ item.barcode }}' pattern='\\d{12,13}' title='Barcode must be 12 or 13 digits' required><button type='submit'>Save</button><button type='button' onclick=\"toggleEdit('{{ item.rating_key }}')\">Cancel</button></form></td><td><button onclick=\"playMedia('{{ item.rating_key }}')\">Play</button><button onclick=\"togglePoster('{{ item.rating_key }}')\">Poster</button><a class='button-link' href='/poster/{{ item.rating_key }}?download=true' download>Download</a><button onclick=\"toggleEdit('{{ item.rating_key }}')\">Edit Barcode</button><div id='poster-container-{{ item.rating_key }}' style='display:none;margin-top:10px;'><img id='poster-{{ item.rating_key }}' data-src='/poster/{{ item.rating_key }}' style='max-width:200px;' loading='lazy'></div></td></tr>{% endfor %}</tbody></table><div class='pagination'><button onclick=\"window.location.href='/?page={{ page - 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page <= 1 %}disabled{% endif %}>Prev</button><span>Page {{ page }} of {{ total_pages }} | Total items: {{ total_items }}</span><button onclick=\"window.location.href='/?page={{ page + 1 }}&per_page={{ per_page }}{% if search_term %}&search={{ search_term }}{% endif %}{% if genre_filter %}&genre={{ genre_filter }}{% endif %}'\" {% if page >= total_pages %}disabled{% endif %}>Next</button></div><script>document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('input[name=\"scanner_mode\"]').forEach(radio=>radio.addEventListener('change',toggleScannerInputs));toggleScannerInputs();const eventSource=new EventSource('/stream');eventSource.onmessage=function(event){const data=JSON.parse(event.data);document.getElementById('status-box').textContent=data.message;};const themeToggle=document.getElementById('theme-toggle');themeToggle.addEventListener('click',()=>{let isDark=document.body.classList.toggle('dark-mode');localStorage.setItem('theme',isDark?'dark':'light');updateThemeIcon(isDark)});if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme')&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.body.classList.add('dark-mode');updateThemeIcon(true)}checkPdfStatus();document.querySelectorAll('form[id^=\"edit-form-\"]').forEach(form=>{form.addEventListener('submit',function(e){e.preventDefault();const ratingKey=this.id.split('-').pop();fetch('/edit_barcode/'+ratingKey,{method:'POST',body:new FormData(this)}).then(res=>res.json()).then(data=>{if(data.error){alert('Error: '+data.error)}else{document.getElementById('barcode-'+ratingKey).textContent=new FormData(this).get('barcode');if(document.getElementById('poster-'+ratingKey).parentElement.style.display!=='none'){document.getElementById('poster-'+ratingKey).src='/poster/'+ratingKey+'?t='+(new Date).getTime()}toggleEdit(ratingKey);alert(data.message)}}).catch(err=>alert('Error: '+err.message))})});populateSelect('client_select',{{ clients|tojson }},'{{ last_client }}');populateSelect('serial_device_select',{{ serial_ports|tojson }},'{{ scanner_device }}');populateHidSelect('hid_device_select',{{ hid_devices|tojson }},'{{ scanner_device }}');});function updateThemeIcon(isDark){const themeToggle=document.getElementById('theme-toggle');themeToggle.textContent=isDark?'🌙':'☀️'}function checkPdfStatus(){const pdfStatusText=document.getElementById('pdf-status-text');const pdfStartButton=document.getElementById('pdf-start-button');const pdfLinksContainer=document.getElementById('pdf-links-container');const pdfStopButton=document.getElementById('pdf-stop-button');let pdfStatusInterval=null;fetch('/pdf_status').then(e=>e.json()).then(e=>{pdfLinksContainer.innerHTML='';if(e.status==='running'){pdfStatusText.textContent='Status: Generating PDFs...';pdfStatusText.style.color='orange';pdfStartButton.style.display='none';pdfStopButton.style.display='inline-block';if(!pdfStatusInterval){pdfStatusInterval=setInterval(checkPdfStatus,5000)}}else{pdfStopButton.style.display='none';if(e.status==='complete'){pdfStatusText.textContent='Status: Generation Complete!';pdfStatusText.style.color='green';pdfStartButton.style.display='inline-block';fetch('/get_pdf_files').then(r=>r.json()).then(files=>{if(files.length>0){pdfLinksContainer.innerHTML='<strong>Downloads:</strong><br>';files.forEach(file=>{const link=document.createElement('a');link.href='/static/generated_pdfs/'+file;link.textContent=file;link.className='button-link';link.download=true;pdfLinksContainer.appendChild(link);pdfLinksContainer.appendChild(document.createElement('br'))})}})}else if(e.status.startsWith('error')){pdfStatusText.textContent='Status: '+e.status;pdfStatusText.style.color='red';pdfStartButton.style.display='inline-block'}else{pdfStatusText.textContent='';pdfStartButton.style.display='inline-block'}clearInterval(pdfStatusInterval);pdfStatusInterval=null}})}function toggleScannerInputs(){const mode=document.querySelector('input[name=\"scanner_mode\"]:checked').value;document.getElementById('serial-group').style.display=mode==='serial'?'block':'none';document.getElementById('hid-group').style.display=mode==='hid'?'block':'none'}function togglePoster(ratingKey){const container=document.getElementById('poster-container-'+ratingKey);const img=document.getElementById('poster-'+ratingKey);if(container.style.display==='none'){img.src=img.dataset.src;container.style.display='block'}else{container.style.display='none'}}function toggleEdit(ratingKey){const span=document.getElementById('barcode-'+ratingKey);const form=document.getElementById('edit-form-'+ratingKey);if(span.style.display==='none'){span.style.display='inline';form.style.display='none'}else{span.style.display='none';form.style.display='inline-block'}}function playMedia(ratingKey){fetch('/play/'+ratingKey,{method:'POST'}).then(res=>{if(!res.ok){res.text().then(text=>alert('Error: '+text))}}).catch(err=>alert('Error: '+err.message))}function refreshClients(){fetch('/refresh_clients',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){alert('Error: '+data.error);return}const select=document.getElementById('client_select');populateSelect(select.id,data.clients,select.value);alert('Client list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshSerialPorts(){fetch('/refresh_serial_ports',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){alert('Error: '+data.error);return}const select=document.getElementById('serial_device_select');populateSelect(select.id,data.ports,select.value);alert('Serial port list refreshed!')}).catch(err=>alert('Error: '+err.message))}function refreshHidDevices(){fetch('/refresh_hid_devices',{method:'POST'}).then(res=>res.json()).then(data=>{if(data.error){alert('Error: '+data.error);return}const select=document.getElementById('hid_device_select');populateHidSelect(select.id,data.devices,select.value);alert('HID device list refreshed!')}).catch(err=>alert('Error: '+err.message))}function startPdfGeneration(){const selectedRating=document.getElementById('rating-filter').value;const url='/start_pdf_generation?rating='+encodeURIComponent(selectedRating);window.location.href=url}function clearSearch(){window.location.href='/?page=1&per_page={{ per_page }}'}function populateSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);const currentVal=select.value;select.innerHTML='<option value=\"\">Select a Device</option>';options.forEach(opt=>{const option=document.createElement('option');option.value=opt;option.textContent=opt;if(opt===selectedValue||opt===currentVal){option.selected=true}select.appendChild(option)})}function populateHidSelect(selectId,options,selectedValue){const select=document.getElementById(selectId);select.innerHTML='';options.forEach(opt=>{const option=document.createElement('option');option.value=opt.path;option.textContent=opt.name;if(opt.path===selectedValue){option.selected=true}select.appendChild(option)})}</script></body></html>" > templates/index.html
 
 # ----------------------------------------------------------------------
 # -------- 7. Other HTML Templates & CSS -------------------------------
@@ -920,17 +959,23 @@ echo "import time" >> barcode_listener.py
 echo "import os" >> barcode_listener.py
 echo "import requests" >> barcode_listener.py
 echo "import json" >> barcode_listener.py
+echo "import evdev" >> barcode_listener.py
+echo "from evdev import ecodes" >> barcode_listener.py
 echo "from plexapi.server import PlexServer" >> barcode_listener.py
 echo "import pychromecast" >> barcode_listener.py
-echo "try:" >> barcode_listener.py
-echo "    import evdev" >> barcode_listener.py
-echo "    from evdev import ecodes" >> barcode_listener.py
-echo "except ImportError:" >> barcode_listener.py
-echo "    evdev = None" >> barcode_listener.py
 echo "" >> barcode_listener.py
 echo "DB_PATH = os.path.expanduser('~/.config/plex_barcode_remote/barcodes.db')" >> barcode_listener.py
 echo "PLEX_APP_ID = '9AC19493'" >> barcode_listener.py
 echo "WEB_URL = 'http://127.0.0.1:5000'" >> barcode_listener.py
+echo "" >> barcode_listener.py
+echo "SCAN_CODES = {" >> barcode_listener.py
+echo "    0: None, 1: u'ESC', 2: u'1', 3: u'2', 4: u'3', 5: u'4', 6: u'5', 7: u'6', 8: u'7', 9: u'8', 10: u'9', 11: u'0'," >> barcode_listener.py
+echo "    12: u'-', 13: u'=', 14: u'BKSP', 15: u'TAB', 16: u'q', 17: u'w', 18: u'e', 19: u'r', 20: u't', 21: u'y', 22: u'u'," >> barcode_listener.py
+echo "    23: u'i', 24: u'o', 25: u'p', 26: u'[', 27: u']', 28: u'CRLF', 29: u'LCTRL', 30: u'a', 31: u's', 32: u'd', 33: u'f'," >> barcode_listener.py
+echo "    34: u'g', 35: u'h', 36: u'j', 37: u'k', 38: u'l', 39: u';', 40: u'\'', 41: u'\`', 42: u'LSHFT', 43: u'\\\\'," >> barcode_listener.py
+echo "    44: u'z', 45: u'x', 46: u'c', 47: u'v', 48: u'b', 49: u'n', 50: u'm', 51: u',', 52: u'.', 53: u'/', 54: u'RSHFT'," >> barcode_listener.py
+echo "    56: u'LALT', 57: u' ', 100: u'RALT'" >> barcode_listener.py
+echo "}" >> barcode_listener.py
 echo "" >> barcode_listener.py
 echo "def get_db():" >> barcode_listener.py
 echo "    conn = sqlite3.connect(DB_PATH, timeout=20)" >> barcode_listener.py
@@ -952,15 +997,6 @@ echo "    try:" >> barcode_listener.py
 echo "        requests.post(f'{WEB_URL}/publish_status', json={'message': message}, timeout=2)" >> barcode_listener.py
 echo "    except requests.exceptions.RequestException as e:" >> barcode_listener.py
 echo "        log(f'Could not post status update to web UI: {e}')" >> barcode_listener.py
-echo "" >> barcode_listener.py
-echo "SCAN_CODES = {" >> barcode_listener.py
-echo "    0: None, 1: u'ESC', 2: u'1', 3: u'2', 4: u'3', 5: u'4', 6: u'5', 7: u'6', 8: u'7', 9: u'8', 10: u'9', 11: u'0'," >> barcode_listener.py
-echo "    12: u'-', 13: u'=', 14: u'BKSP', 15: u'TAB', 16: u'q', 17: u'w', 18: u'e', 19: u'r', 20: u't', 21: u'y', 22: u'u'," >> barcode_listener.py
-echo "    23: u'i', 24: u'o', 25: u'p', 26: u'[', 27: u']', 28: u'CRLF', 29: u'LCTRL', 30: u'a', 31: u's', 32: u'd', 33: u'f'," >> barcode_listener.py
-echo "    34: u'g', 35: u'h', 36: u'j', 37: u'k', 38: u'l', 39: u';', 40: u'\'', 41: u'\`', 42: u'LSHFT', 43: u'\\\\'," >> barcode_listener.py
-echo "    44: u'z', 45: u'x', 46: u'c', 47: u'v', 48: u'b', 49: u'n', 50: u'm', 51: u',', 52: u'.', 53: u'/', 54: u'RSHFT'," >> barcode_listener.py
-echo "    56: u'LALT', 57: u' ', 100: u'RALT'" >> barcode_listener.py
-echo "}" >> barcode_listener.py
 echo "" >> barcode_listener.py
 echo "def get_scanner_settings():" >> barcode_listener.py
 echo "    with get_db() as conn:" >> barcode_listener.py
@@ -1018,16 +1054,10 @@ echo "" >> barcode_listener.py
 echo "def play_media_on_device(rating_key, plex_server, target_device_name):" >> barcode_listener.py
 echo "    try:" >> barcode_listener.py
 echo "        media = plex_server.fetchItem(int(rating_key))" >> barcode_listener.py
-echo "        if not media: log(f'No media found for rating_key {rating_key}'); return" >> barcode_listener.py
-echo "        media_to_play, offset_ms = media, 0" >> barcode_listener.py
-echo "        if media.type == 'show':" >> barcode_listener.py
-echo "            episodes = sorted(media.episodes(), key=lambda e: (e.seasonNumber, e.episodeNumber))" >> barcode_listener.py
-echo "            resume_ep = next((ep for ep in episodes if getattr(ep, 'viewCount', 0) and getattr(ep, 'viewOffset', 0)), None)" >> barcode_listener.py
-echo "            if not resume_ep: resume_ep = next((ep for ep in episodes if not getattr(ep, 'viewCount', 0)), episodes[0] if episodes else None)" >> barcode_listener.py
-echo "            if resume_ep:" >> barcode_listener.py
-echo "                media_to_play, offset_ms = resume_ep, getattr(resume_ep, 'viewOffset', 0) or 0" >> barcode_listener.py
-echo "                log(f'Selected episode: {resume_ep.title} (offset: {offset_ms}ms)')" >> barcode_listener.py
-echo "        post_status_update(f'Playing \"{media_to_play.title}\" on {target_device_name}')" >> barcode_listener.py
+echo "        if not media: " >> barcode_listener.py
+echo "            log(f'No media found for rating_key {rating_key}')" >> barcode_listener.py
+echo "            return" >> barcode_listener.py
+echo "        post_status_update(f'Playing \"{media.title}\" on {target_device_name}')" >> barcode_listener.py
 echo "        is_chromecast = False" >> barcode_listener.py
 echo "        try:" >> barcode_listener.py
 echo "            casts, _ = pychromecast.get_listed_chromecasts(friendly_names=[target_device_name])" >> barcode_listener.py
@@ -1040,12 +1070,8 @@ echo "            try:" >> barcode_listener.py
 echo "                if not is_chromecast:" >> barcode_listener.py
 echo "                    log(f'Attempting playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> barcode_listener.py
 echo "                    client = plex_server.client(target_device_name)" >> barcode_listener.py
-echo "                    client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
-echo "                    time.sleep(2)" >> barcode_listener.py
-echo "                    client.stop()" >> barcode_listener.py
-echo "                    time.sleep(2)" >> barcode_listener.py
-echo "                    client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
-echo "                    log(f'Playback sequence completed for {target_device_name}.')" >> barcode_listener.py
+echo "                    client.playMedia(media)" >> barcode_listener.py
+echo "                    log(f'Playback command sent for \"{media.title}\" to {target_device_name}.')" >> barcode_listener.py
 echo "                else:" >> barcode_listener.py
 echo "                    log(f'Attempting Chromecast playback on {target_device_name} (attempt {attempt + 1}/{max_retries})...')" >> barcode_listener.py
 echo "                    plex_client = None" >> barcode_listener.py
@@ -1067,7 +1093,7 @@ echo "                            if c.machineIdentifier == target_uuid: plex_cl
 echo "                    if plex_client:" >> barcode_listener.py
 echo "                        client_name = getattr(plex_client, \"name\", plex_client.title)" >> barcode_listener.py
 echo "                        log(f'UUID match found! Client name is \"{client_name}\".')" >> barcode_listener.py
-echo "                        plex_client.playMedia(media_to_play, offset=offset_ms)" >> barcode_listener.py
+echo "                        plex_client.playMedia(media)" >> barcode_listener.py
 echo "                    else:" >> barcode_listener.py
 echo "                        raise ConnectionError('Could not find a matching Chromecast client on Plex Server after wake-up.')" >> barcode_listener.py
 echo "                return" >> barcode_listener.py
@@ -1119,12 +1145,11 @@ echo "            log(f'Unexpected error in serial listener: {e}. Retrying in 5 
 echo "            time.sleep(5)" >> barcode_listener.py
 echo "" >> barcode_listener.py
 echo "def listen_hid(device_path):" >> barcode_listener.py
-echo "    if not evdev: log('Python evdev library not found.'); return" >> barcode_listener.py
 echo "    log(f'Starting HID listener on {device_path}')" >> barcode_listener.py
 echo "    while True:" >> barcode_listener.py
 echo "        try:" >> barcode_listener.py
 echo "            device = evdev.InputDevice(device_path)" >> barcode_listener.py
-echo "            log(f'Successfully opened HID device {device_path} (in non-exclusive mode).')" >> barcode_listener.py
+echo "            log(f'Successfully opened HID device {device.name} at {device_path}.')" >> barcode_listener.py
 echo "            barcode = ''" >> barcode_listener.py
 echo "            for event in device.read_loop():" >> barcode_listener.py
 echo "                if event.type == ecodes.EV_KEY and event.value == 1:" >> barcode_listener.py
@@ -1183,18 +1208,20 @@ echo "After=network.target plex-barcode-web.service" >> /tmp/plex-barcode-listen
 echo "" >> /tmp/plex-barcode-listener.service
 echo "[Service]" >> /tmp/plex-barcode-listener.service
 echo "User=$USER" >> /tmp/plex-barcode-listener.service
-echo "Group=$(id -gn $USER)" >> /tmp/plex-barcode-listener.service
+echo "Group=input" >> /tmp/plex-barcode-listener.service
 echo "WorkingDirectory=$PROJECT_DIR" >> /tmp/plex-barcode-listener.service
-echo "Environment=\"FLASK_PORT=$FLASK_PORT\"" >> /tmp/plex-barcode-listener.service
 echo "ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/barcode_listener.py" >> /tmp/plex-barcode-listener.service
 echo "Restart=always" >> /tmp/plex-barcode-listener.service
 echo "RestartSec=10" >> /tmp/plex-barcode-listener.service
-echo "SupplementaryGroups=input" >> /tmp/plex-barcode-listener.service
 echo "" >> /tmp/plex-barcode-listener.service
 echo "[Install]" >> /tmp/plex-barcode-listener.service
 echo "WantedBy=multi-user.target" >> /tmp/plex-barcode-listener.service
 sudo mv /tmp/plex-barcode-listener.service /etc/systemd/system/plex-barcode-listener.service
 sudo chmod 644 /etc/systemd/system/plex-barcode-listener.service
+
+# NEW: Add a udev rule to ensure the user can access input devices
+echo "[10/10] Adding udev rule for input device permissions..."
+echo 'KERNEL=="event*", SUBSYSTEM=="input", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-input-permissions.rules > /dev/null
 sudo usermod -a -G input $USER
 
 sudo systemctl enable --now redis-server
@@ -1206,5 +1233,5 @@ sudo systemctl restart plex-barcode-listener.service
 
 echo "=== Installation complete! ==="
 echo "Access the dashboard at http://$(hostname -I | cut -d' ' -f1):$FLASK_PORT"
-echo "Your user has been added to the 'input' group to read HID devices. A REBOOT might be required for this to take effect."
+echo "A REBOOT IS HIGHLY RECOMMENDED for all permission changes to take effect."
 echo "Use 'sudo systemctl status plex-barcode-web' and 'sudo systemctl status plex-barcode-listener' to check service status."
