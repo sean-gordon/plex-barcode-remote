@@ -396,13 +396,26 @@ def index():
         if genre_filter:
             conditions.append('mi.genres_json LIKE ?')
             params.append(f'%"{genre_filter}"%')
+        
+        # Total count query for pagination
+        count_query = 'SELECT COUNT(*) FROM media_items mi'
+        if conditions:
+            count_query += ' WHERE ' + ' AND '.join(conditions)
+        total_items = conn.execute(count_query, params).fetchone()[0]
+        
+        # Paginated query
         if conditions:
             base_query += ' WHERE ' + ' AND '.join(conditions)
-        all_media_items_rows = conn.execute(base_query, params).fetchall()
+        base_query += ' ORDER BY mi.title COLLATE NOCASE ASC'
+        base_query += ' LIMIT ? OFFSET ?'
+        paged_params = params + [per_page, (page - 1) * per_page]
+        
+        all_media_items_rows = conn.execute(base_query, paged_params).fetchall()
         all_genres_rows = conn.execute('SELECT DISTINCT genres_json FROM media_items').fetchall()
         all_ratings_rows = conn.execute("SELECT DISTINCT contentRating FROM media_items WHERE contentRating IS NOT NULL AND contentRating != '' ORDER BY contentRating").fetchall()
         known_clients = [row['name'] for row in conn.execute('SELECT name FROM known_clients').fetchall()]
         settings_rows = conn.execute('SELECT key, value FROM settings').fetchall()
+    
     all_ratings = [row['contentRating'] for row in all_ratings_rows]
     all_genres = set()
     for row in all_genres_rows:
@@ -413,20 +426,17 @@ def index():
                     all_genres.add(genre)
             except (json.JSONDecodeError, TypeError):
                 pass
-    processed_items = [dict(row) for row in all_media_items_rows]
-    for item in processed_items:
+    
+    paginated_items = [dict(row) for row in all_media_items_rows]
+    for item in paginated_items:
         try:
             item['directors'] = json.loads(item['directors_json'] or '[]')
             item['actors'] = json.loads(item['actors_json'] or '[]')
         except (json.JSONDecodeError, TypeError):
             item['directors'] = []
             item['actors'] = []
-    sorted_items = sorted(processed_items, key=lambda x: x['title'].lower())
-    total_items = len(sorted_items)
+            
     total_pages = (total_items + per_page - 1) // per_page if per_page > 0 else 1
-    start = (page - 1) * per_page
-    end = start + per_page
-    paginated_items = sorted_items[start:end]
     settings = {row['key']: row['value'] for row in settings_rows}
     last_client = settings.get('last_client')
     scanner_mode = settings.get('scanner_mode', 'serial')
