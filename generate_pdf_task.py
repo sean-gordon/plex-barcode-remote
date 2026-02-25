@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw
 import barcode
 from barcode.writer import ImageWriter
 import requests
+from fpdf import FPDF
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
