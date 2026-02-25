@@ -1,0 +1,13 @@
+flask
+requests
+plexapi
+pillow
+python-barcode
+pyserial
+evdev
+pychromecast
+fpdf2
+Flask-SSE
+Flask-Login
+Werkzeug
+gunicorn

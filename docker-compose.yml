@@ -1,0 +1,42 @@
+services:
+  web:
+    build: .
+    container_name: plex-barcode-web
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+      - config_data:/root/.config/plex_barcode_remote
+      - ./static/generated_pdfs:/app/static/generated_pdfs
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+
+  listener:
+    build: .
+    container_name: plex-barcode-listener
+    restart: unless-stopped
+    command: python barcode_listener.py
+    volumes:
+      - .:/app
+      - config_data:/root/.config/plex_barcode_remote
+    # Map devices for Serial and HID access.
+    # You may need to adjust these paths based on your connected hardware.
+    devices:
+      - /dev/input:/dev/input
+      # - /dev/ttyACM0:/dev/ttyACM0  # Uncomment and adjust for serial scanners
+    privileged: true
+    depends_on:
+      - web
+
+  redis:
+    image: redis:alpine
+    container_name: plex-barcode-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  config_data:

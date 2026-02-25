@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.db
+barcodes.db
+config_data/
+static/generated_pdfs/*
+!static/generated_pdfs/.gitkeep
+plex_pin_login_source.txt
+auth-portal-temp/
