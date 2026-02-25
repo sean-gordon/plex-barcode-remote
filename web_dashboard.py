@@ -362,6 +362,12 @@ def plex_server_save():
         plex = None
         
         log(f'Plex server configured via OAuth: {server_name} ({server_uri})')
+        
+        # Trigger initial library sync in the background
+        python_exec = 'python'
+        sync_script = os.path.join(PROJECT_DIR, 'sync_plex_library.py')
+        subprocess.Popen([python_exec, sync_script])
+        
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
