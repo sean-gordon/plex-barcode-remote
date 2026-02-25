@@ -40,81 +40,44 @@ The entire system is managed through a clean, simple web dashboard that runs on 
 * A running and configured **Plex Media Server** on the same local network.
 
 ---
-## Installation
+## Installation (Docker) 🐳
 
-The application is installed using a single script from this repository.
+The application now runs entirely within Docker containers for easy deployment on Raspberry Pi.
 
-1.  Clone this repository to your Raspberry Pi's home directory:
-    ```
-    git clone [https://github.com/sean-gordon/plex-barcode-remote.git](https://github.com/sean-gordon/plex-barcode-remote.git)
-    ```
-2.  Navigate into the new directory:
-    ```
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/sean-gordon/plex-barcode-remote.git
     cd plex-barcode-remote
     ```
-3.  Make the installer executable and run it:
+
+2.  **Start the containers**:
+    ```bash
+    docker-compose up -d
     ```
-    chmod +x install.sh
-    bash ./install.sh
-    ```
-4.  The script will install all dependencies, set up the database, and start the required background services.
+    This will start the web dashboard (port 5000), the barcode listener, and a Redis instance for live updates.
 
 ---
 ## Setup & Configuration
 
-After the installation is complete, there are a few one-time setup steps.
-
-#### Step 1: Access the Dashboard
-Find your Pi's IP address by running `hostname -I` in the terminal. Then, open a web browser and go to `http://<YOUR_PI_IP_ADDRESS>:5000`.
-
-#### Step 2: Initial Login
-You will be greeted by a login screen. The default credentials are:
--   **Username:** `Admin`
--   **Password:** `Admin`
-
-#### Step 3: Initial Configuration (Plex, TMDB, User)
-After logging in, you will be automatically directed to the setup page. It is highly recommended to fill out all fields.
-
-
-
--   **Plex Details:** Enter your Plex server's IP address, port (usually 32400), and your [Plex Authentication Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
--   **TMDB API Key (Optional):** To enable the "Missing Media Lookup" feature, get a free API key from [The Movie Database](https://www.themoviedb.org/settings/api) and paste it here.
--   **User Management:** It is **highly recommended** that you change the default username and password on this page.
--   Click **"Save Settings"**.
-
-#### Step 4: Automatic Library Sync
-After you save your Plex settings for the first time, the system will automatically begin syncing your Plex library to the local cache. This may take several minutes. The main dashboard will be empty until this first sync is complete. You can monitor the progress in the "Logs" page.
-
-#### Step 5: Configure Playback Target & Scanner
-Once the sync is complete and your media appears on the dashboard:
--   **Playback Target:** Select your primary player from the dropdown and click "Set".
--   **Scanner Settings:** Choose your scanner type (HID or Serial), select the correct device, and click "Save & Restart Listener".
+1.  **Access the Dashboard**: Open `http://<PI_IP>:5000` in your browser.
+2.  **Initial Login**: Use default credentials (**Admin** / **Admin**).
+3.  **Plex OAuth**: On the Setup page, click **"Login with Plex"**. You will be redirected to link your account.
+4.  **Server Selection**: Once authenticated, select your Plex server from the dropdown. 
+    > [!TIP]
+    > If running inside Docker, try selecting a **Relay** or **Remote** connection if the local IP is unreachable.
+5.  **Configure Hardware**: Select your USB scanner or NFC reader device and save settings.
 
 ---
-## Maintenance
+## Development
 
-#### Checking Service Status
-You can check the status of the two background services with these commands:
-sudo systemctl status plex-barcode-web.service
-sudo systemctl status plex-barcode-listener.service
-
-
-#### Scheduling Background Syncs & Log Cleanup
-Two maintenance scripts are included. It is recommended to schedule them to run automatically using `cron`.
-
-1.  Open the cron editor: `crontab -e`
-2.  Add these two lines to the bottom of the file (replacing `seangordon` with your username):
-    ```cron
-    # Run Plex library sync every 6 hours
-    0 */6 * * * /home/seangordon/plex-barcode-remote/venv/bin/python /home/seangordon/plex-barcode-remote/sync_plex_library.py
-    
-    # Run log cleanup every day at 2:15 AM
-    15 2 * * * /home/seangordon/plex-barcode-remote/cleanup_logs.sh
+-   **Live Updates**: the project directory is mounted as a volume in the container, so changes to `.py` or `.html` files apply immediately.
+-   **Rebuilding**:
+    ```bash
+    docker-compose up -d --build
     ```
-3.  Save and exit.
 
 ## License
 
 Copyright (c) 2025 Sean Gordon. All Rights Reserved.
+Proprietary software. No license is granted to use, copy, modify, or distribute without explicit permission.
 
-This project is proprietary. You may view the source code for educational purposes, but you are not granted any license to use, copy, modify, or distribute this software without explicit written permission from the copyright holder.

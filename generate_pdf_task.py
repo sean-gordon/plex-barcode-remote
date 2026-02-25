@@ -12,7 +12,8 @@ from PIL import Image, ImageDraw
 import barcode
 from barcode.writer import ImageWriter
 import requests
-from fpdf import FPDF
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DB_PATH = os.path.expanduser('~/.config/plex_barcode_remote/barcodes.db')
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +48,9 @@ def get_plex_server():
         return None
     try:
         plex_url = f"{settings['plex_protocol']}://{settings['plex_url']}:{settings['plex_port']}"
-        return PlexServer(plex_url, settings['plex_token'])
+        session = requests.Session()
+        session.verify = False
+        return PlexServer(plex_url, settings['plex_token'], session=session)
     except Exception as e:
         log(f'Failed to connect to Plex server: {e}')
         return None
@@ -103,6 +106,7 @@ def main():
         log("PDF generation started for all ratings.")
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(CACHE_DIR, exist_ok=True)
     try:
         with open(STATUS_FILE, 'w') as f: f.write('running')
         plex = get_plex_server()

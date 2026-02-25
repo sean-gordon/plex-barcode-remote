@@ -1,3 +1,11 @@
+# Document and Log exclusions
+*.md
+!README.md
+*.txt
+plex_pin_login_source*
+auth-portal-temp/
+
+# Python and Database
 __pycache__/
 *.pyc
 *.pyo
@@ -7,5 +15,3 @@ barcodes.db
 config_data/
 static/generated_pdfs/*
 !static/generated_pdfs/.gitkeep
-plex_pin_login_source.txt
-auth-portal-temp/
